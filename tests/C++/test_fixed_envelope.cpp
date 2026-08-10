@@ -18,6 +18,27 @@
 using namespace IsoSpec;
 using namespace test_helpers;
 
+// --- ABI guard ---------------------------------------------------------------
+//
+// FixedEnvelope is returned by value from FromThreshold()/FromTotalProb()/…, so
+// callers stack-allocate it and its layout is part of the shared library's ABI.
+// Growing it (2.4.0 took it from 96 to 216 bytes) breaks every program still
+// linked against the old library, and nothing else in the build notices.
+//
+// The soname carries MAJOR.MINOR (see CMakeLists.txt), so a minor bump already
+// covers a break like that one.  What this assertion is for is the case that
+// scheme does NOT cover: a layout change slipped into a *patch* release, where
+// the soname stays put.  If it fires, either revert the layout change or make
+// the release a minor one.
+//
+// Pinned only on LP64 Unix, the reference platform: the size legitimately
+// differs elsewhere (aligned_unique_ptr's VM bookkeeping carries one more word
+// on Windows, and pointers are narrower on 32-bit).
+#if defined(__unix__) && defined(__LP64__)
+static_assert(sizeof(FixedEnvelope) == 216,
+              "FixedEnvelope's layout changed: this is an ABI break. See the note above.");
+#endif
+
 namespace {
 
 // FixedEnvelope takes ownership of malloc'd arrays; build one from literals.

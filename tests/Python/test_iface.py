@@ -240,3 +240,19 @@ if __name__ == "__main__":
     test_lightest_peak()
     test_heaviest_peak()
     test_monoisotopic_peak()
+
+
+def test_get_simd_level():
+    print("Checking get_simd_level... ", end="")
+
+    # The vocabulary is a contract with the C++ side (active_simd_level in
+    # isa_kernels.h); the Python layer only decodes it.
+    known = {"scalar", "sse2", "avx", "avx2", "avx512", "neon", "simd"}
+
+    level = IsoSpecPy.get_simd_level()
+    assert isinstance(level, str), type(level)
+    assert level in known, level
+    # Resolved once in C++ and cached, so it must not drift between calls.
+    assert IsoSpecPy.get_simd_level() == level
+
+    print(level, "OK!")

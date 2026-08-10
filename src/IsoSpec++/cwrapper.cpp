@@ -360,11 +360,10 @@ void deleteFixedEnvelope(void* t, bool release_everything)
 {
     FixedEnvelope* tt = reinterpret_cast<FixedEnvelope*>(t);
     if(release_everything)
-    {
-        tt->release_masses();
-        tt->release_probs();
-        tt->release_confs();
-    }
+        // Drops the arrays without freeing (and without the copy release_masses()
+        // and friends would make of a non-malloc()'d one): this is the path used
+        // for envelopes wrapped around buffers their real owner still holds.
+        tt->release_everything();
     delete tt;
 }
 
@@ -389,6 +388,42 @@ const double* probsFixedEnvelope(void* tabulator)
 const int* confsFixedEnvelope(void* tabulator)
 {
     return c_guard([&]{ return reinterpret_cast<FixedEnvelope*>(tabulator)->release_confs(); });
+}
+
+// Shared tail of the three *WithDeleter wrappers: publish the (size, deleter)
+// pair through the out-parameters and return the pointer. Not a template, and
+// not in an anonymous namespace, because everything here has C linkage.
+static void* publish_released(const ReleasedArray& r, size_t* size_out, IsoSpecArrayDeleter* deleter_out)
+{
+    if(size_out != nullptr)
+        *size_out = r.size;
+    if(deleter_out != nullptr)
+        *deleter_out = r.deleter;
+    return r.ptr;
+}
+
+double* massesFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out)
+{
+    return c_guard([&]{ return reinterpret_cast<double*>(publish_released(
+        reinterpret_cast<FixedEnvelope*>(tabulator)->release_masses_with_deleter(), size_out, deleter_out)); });
+}
+
+double* probsFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out)
+{
+    return c_guard([&]{ return reinterpret_cast<double*>(publish_released(
+        reinterpret_cast<FixedEnvelope*>(tabulator)->release_probs_with_deleter(), size_out, deleter_out)); });
+}
+
+int* confsFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out)
+{
+    return c_guard([&]{ return reinterpret_cast<int*>(publish_released(
+        reinterpret_cast<FixedEnvelope*>(tabulator)->release_confs_with_deleter(), size_out, deleter_out)); });
+}
+
+void freeReleasedArrayWithDeleter(void* array, size_t size, IsoSpecArrayDeleter deleter)
+{
+    if(array != nullptr && deleter != nullptr)
+        deleter(array, size);
 }
 
 size_t confs_noFixedEnvelope(void* tabulator)
@@ -538,5 +573,10 @@ void parse_fasta_c(const char* fasta, int atomCounts[6])
 {
     // Same thing, only this time with C linkage
     parse_fasta(fasta, atomCounts);
+}
+
+const char* activeSimdLevel()
+{
+    return active_simd_level();
 }
 }  //  extern "C" ends here

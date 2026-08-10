@@ -111,6 +111,26 @@
 #endif
 
 
+/* Is this an x86 target, i.e. one where several instruction-set levels exist to
+   choose between at run time? Everywhere else there is nothing to dispatch on:
+   on AArch64, NEON is architecturally guaranteed and is what the baseline
+   kernels already compile to. */
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define ISOSPEC_ISA_BUILD_X86 1
+#else
+#define ISOSPEC_ISA_BUILD_X86 0
+#endif
+
+/* Build several instruction-set levels of the batched kernels into the binary
+   and pick one at run time? Off by default, so a plain `c++ unity-build.cpp`
+   (and the R package, which compiles its own sources under CRAN's flags) keeps
+   the single-level behaviour; the Makefile, the CMake builds and the Python
+   wheel all turn it on. Turning it on requires the isa_kernels_*.cpp files to
+   be compiled and linked in -- see isa_kernels.h. */
+#if !defined(ISOSPEC_ISA_DISPATCH)
+#define ISOSPEC_ISA_DISPATCH 0
+#endif
+
 // C++-only from here on: cwrapper.h includes this header, and that one must
 // stay includable from a C translation unit (it is the C ABI's header).
 #ifdef __cplusplus
@@ -139,17 +159,22 @@
         #include <experimental/simd>
         namespace simd_ns = std::experimental;
         using simd_double = simd_ns::native_simd<double>;
-        constexpr std::size_t DOUBLE_SIMD_ALIGNMENT =
-                alignof(simd_ns::native_simd<double>);
     #endif
 #endif
 
 #if !defined(ISOSPEC_HAS_SIMD)
     #define ISOSPEC_HAS_SIMD 0
-
-    // Hopefully <simd> will be available everywhere before someone
-    // comes up with a CPU that has 256-byte SIMD registers.
-    constexpr std::size_t DOUBLE_SIMD_ALIGNMENT = 128;
 #endif
+
+// Alignment for the double arrays the batched kernels read and write.
+//
+// Deliberately a constant, and not alignof(native_simd<double>): with runtime
+// ISA dispatch the kernel that ends up running is chosen from the CPU, not from
+// the -march this translation unit saw, so the layout has to satisfy the widest
+// kernel that could be selected -- 64 bytes, for AVX-512's 8 doubles. Anything
+// derived from the ambient -march would under-align the arrays for a wider
+// kernel. (It is also a cache line on every target we build for, which the
+// arrays want anyway.)
+constexpr std::size_t DOUBLE_SIMD_ALIGNMENT = 64;
 
 #endif  /* __cplusplus */

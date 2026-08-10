@@ -24,10 +24,13 @@
 namespace IsoSpec
 {
 
+// Copies of an envelope are always made into aligned arrays of our own, even
+// when the source adopted foreign, arbitrarily aligned ones. The size is known
+// up front, so these never grow and stay on the small backend.
 FixedEnvelope::FixedEnvelope(const FixedEnvelope& other) :
-_masses(array_copy_malloc<double>(other._masses, other._confs_no)),
-_probs(array_copy_malloc<double>(other._probs, other._confs_no)),
-_confs(array_copy_nptr_malloc<int>(other._confs, other._confs_no*other.allDim)),
+_masses(nullptr),
+_probs(nullptr),
+_confs(nullptr),
 _confs_no(other._confs_no),
 allDim(other.allDim),
 sorted_by_mass(other.sorted_by_mass),
@@ -35,7 +38,32 @@ sorted_by_prob(other.sorted_by_prob),
 total_prob(other.total_prob),
 current_size(other._confs_no),
 allDimSizeofInt(other.allDimSizeofInt)
-{}
+{
+    if(other._masses != nullptr)
+    {
+        _masses_owner.reset(_confs_no);
+        _masses = _masses_owner.get();
+        if(_confs_no > 0)
+            memcpy(_masses, other._masses, sizeof(double) * _confs_no);
+    }
+
+    if(other._probs != nullptr)
+    {
+        _probs_owner.reset(_confs_no);
+        _probs = _probs_owner.get();
+        if(_confs_no > 0)
+            memcpy(_probs, other._probs, sizeof(double) * _confs_no);
+    }
+
+    if(other._confs != nullptr)
+    {
+        const size_t no_ints = _confs_no * static_cast<size_t>(allDim);
+        _confs_owner.reset(no_ints);
+        _confs = _confs_owner.get();
+        if(no_ints > 0)
+            memcpy(_confs, other._confs, sizeof(int) * no_ints);
+    }
+}
 
 FixedEnvelope::FixedEnvelope(FixedEnvelope&& other) :
 _masses(other._masses),
@@ -47,7 +75,10 @@ sorted_by_mass(other.sorted_by_mass),
 sorted_by_prob(other.sorted_by_prob),
 total_prob(other.total_prob),
 current_size(other.current_size),
-allDimSizeofInt(other.allDimSizeofInt)
+allDimSizeofInt(other.allDimSizeofInt),
+_masses_owner(std::move(other._masses_owner)),
+_probs_owner(std::move(other._probs_owner)),
+_confs_owner(std::move(other._confs_owner))
 {
 other._masses = nullptr;
 other._probs  = nullptr;
@@ -69,6 +100,9 @@ FixedEnvelope& FixedEnvelope::operator=(const FixedEnvelope& other)
     std::swap(_masses,         tmp._masses);
     std::swap(_probs,          tmp._probs);
     std::swap(_confs,          tmp._confs);
+    std::swap(_masses_owner,   tmp._masses_owner);
+    std::swap(_probs_owner,    tmp._probs_owner);
+    std::swap(_confs_owner,    tmp._confs_owner);
     _confs_no       = tmp._confs_no;
     allDim          = tmp.allDim;
     allDimSizeofInt = tmp.allDimSizeofInt;
@@ -83,9 +117,12 @@ FixedEnvelope& FixedEnvelope::operator=(FixedEnvelope&& other)
 {
     if(this == &other)
         return *this;
-    free(_masses);
-    free(_probs);
-    free(_confs);
+    free_array(_masses_owner, _masses);
+    free_array(_probs_owner,  _probs);
+    free_array(_confs_owner,  _confs);
+    _masses_owner   = std::move(other._masses_owner);
+    _probs_owner    = std::move(other._probs_owner);
+    _confs_owner    = std::move(other._confs_owner);
     _masses         = other._masses;         other._masses      = nullptr;
     _probs          = other._probs;          other._probs       = nullptr;
     _confs          = other._confs;          other._confs       = nullptr;
@@ -108,6 +145,7 @@ allDim(0),
 sorted_by_mass(masses_sorted),
 sorted_by_prob(probs_sorted),
 total_prob(_total_prob),
+current_size(in_confs_no),
 allDimSizeofInt(0)
 {}
 
@@ -120,51 +158,62 @@ allDim(_allDim),
 sorted_by_mass(masses_sorted),
 sorted_by_prob(probs_sorted),
 total_prob(_total_prob),
+current_size(in_confs_no),
 allDimSizeofInt(_allDim * sizeof(int))
+{}
+
+FixedEnvelope::FixedEnvelope(aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT>&& in_masses,
+                             aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT>&& in_probs,
+                             size_t in_confs_no, bool masses_sorted, bool probs_sorted, double _total_prob) :
+_masses(in_masses.get()),
+_probs(in_probs.get()),
+_confs(nullptr),
+_confs_no(in_confs_no),
+allDim(0),
+sorted_by_mass(masses_sorted),
+sorted_by_prob(probs_sorted),
+total_prob(_total_prob),
+current_size(in_confs_no),
+allDimSizeofInt(0),
+_masses_owner(std::move(in_masses)),
+_probs_owner(std::move(in_probs))
 {}
 
 FixedEnvelope FixedEnvelope::operator+(const FixedEnvelope& other) const
 {
-    double* nprobs  = reinterpret_cast<double*>(malloc(sizeof(double) * (_confs_no+other._confs_no)));
-    if(nprobs == nullptr)
-        throw std::bad_alloc();
-    double* nmasses = reinterpret_cast<double*>(malloc(sizeof(double) * (_confs_no+other._confs_no)));
-    if(nmasses == nullptr)
-    {
-        free(nprobs);
-        throw std::bad_alloc();
-    }
+    const size_t new_size = _confs_no + other._confs_no;
+
+    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> nprobs;
+    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> nmasses;
+    nprobs.reset(new_size);
+    nmasses.reset(new_size);
 
     // An empty envelope has null arrays, and memcpy() is declared nonnull: a
     // zero-length copy from it is undefined behaviour, so skip it entirely.
     if(_confs_no > 0)
     {
-        memcpy(nprobs,  _probs,  sizeof(double) * _confs_no);
-        memcpy(nmasses, _masses, sizeof(double) * _confs_no);
+        memcpy(nprobs.get(),  _probs,  sizeof(double) * _confs_no);
+        memcpy(nmasses.get(), _masses, sizeof(double) * _confs_no);
     }
 
     if(other._confs_no > 0)
     {
-        memcpy(nprobs+_confs_no,  other._probs,  sizeof(double) * other._confs_no);
-        memcpy(nmasses+_confs_no, other._masses, sizeof(double) * other._confs_no);
+        memcpy(nprobs.get()+_confs_no,  other._probs,  sizeof(double) * other._confs_no);
+        memcpy(nmasses.get()+_confs_no, other._masses, sizeof(double) * other._confs_no);
     }
 
-    return FixedEnvelope(nmasses, nprobs, _confs_no + other._confs_no);
+    return FixedEnvelope(std::move(nmasses), std::move(nprobs), new_size);
 }
 
 FixedEnvelope FixedEnvelope::operator*(const FixedEnvelope& other) const
 {
-    double* nprobs =  reinterpret_cast<double*>(malloc(sizeof(double) * _confs_no * other._confs_no));
-    if(nprobs == nullptr)
+    if(other._confs_no != 0 && _confs_no > SIZE_MAX / other._confs_no)
         throw std::bad_alloc();
-    //  deepcode ignore CMemoryLeak: It's not a memleak: the memory is passed to FixedEnvelope which
-    //  deepcode ignore CMemoryLeak: takes ownership of it, and will properly free() it in destructor.
-    double* nmasses = reinterpret_cast<double*>(malloc(sizeof(double) * _confs_no * other._confs_no));
-    if(nmasses == nullptr)
-    {
-        free(nprobs);
-        throw std::bad_alloc();
-    }
+
+    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> nprobs;
+    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> nmasses;
+    nprobs.reset(_confs_no * other._confs_no);
+    nmasses.reset(_confs_no * other._confs_no);
 
     size_t tgt_idx = 0;
 
@@ -176,7 +225,7 @@ FixedEnvelope FixedEnvelope::operator*(const FixedEnvelope& other) const
             tgt_idx++;
         }
 
-    return FixedEnvelope(nmasses, nprobs, tgt_idx);
+    return FixedEnvelope(std::move(nmasses), std::move(nprobs), tgt_idx);
 }
 
 void FixedEnvelope::sort_by_mass()
@@ -353,15 +402,10 @@ FixedEnvelope FixedEnvelope::LinearCombination(const FixedEnvelope* const * spec
     for(size_t ii = 0; ii < size; ii++)
         ret_size += spectra[ii]->_confs_no;
 
-    double* newprobs  = reinterpret_cast<double*>(malloc(sizeof(double)*ret_size));
-    if(newprobs == nullptr)
-        throw std::bad_alloc();
-    double* newmasses = reinterpret_cast<double*>(malloc(sizeof(double)*ret_size));
-    if(newmasses == nullptr)
-    {
-        free(newprobs);
-        throw std::bad_alloc();
-    }
+    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> newprobs;
+    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> newmasses;
+    newprobs.reset(ret_size);
+    newmasses.reset(ret_size);
 
     size_t cntr = 0;
     for(size_t ii = 0; ii < size; ii++)
@@ -369,10 +413,11 @@ FixedEnvelope FixedEnvelope::LinearCombination(const FixedEnvelope* const * spec
         double mul = intensities[ii];
         for(size_t jj = 0; jj < spectra[ii]->_confs_no; jj++)
             newprobs[jj+cntr] = spectra[ii]->_probs[jj] * mul;
-        memcpy(newmasses + cntr, spectra[ii]->_masses, sizeof(double) * spectra[ii]->_confs_no);
+        if(spectra[ii]->_confs_no > 0)
+            memcpy(newmasses.get() + cntr, spectra[ii]->_masses, sizeof(double) * spectra[ii]->_confs_no);
         cntr += spectra[ii]->_confs_no;
     }
-    return FixedEnvelope(newmasses, newprobs, cntr);
+    return FixedEnvelope(std::move(newmasses), std::move(newprobs), cntr);
 }
 
 double FixedEnvelope::WassersteinDistance(FixedEnvelope& other)
@@ -711,83 +756,38 @@ FixedEnvelope FixedEnvelope::bin(double bin_width, double middle)
 
 template<bool tgetConfs> void FixedEnvelope::reallocate_memory(size_t new_size)
 {
-    if(new_size > SIZE_MAX / sizeof(double))
-        throw std::bad_alloc();
-    double* tmp_masses = reinterpret_cast<double*>(realloc(_masses, new_size * sizeof(double)));
-    if(tmp_masses == nullptr)
-        throw std::bad_alloc();
-    _masses = tmp_masses;
+    // aligned_unique_ptr::realloc() does the overflow-checked size arithmetic
+    // and throws std::bad_alloc on failure, so there is nothing to check here.
+    grow_array(_masses_owner, _masses, new_size, current_size);
     tmasses = _masses + _confs_no;
 
-    double* tmp_probs = reinterpret_cast<double*>(realloc(_probs,  new_size * sizeof(double)));
-    if(tmp_probs == nullptr)
-        throw std::bad_alloc();
-    _probs = tmp_probs;
+    grow_array(_probs_owner, _probs, new_size, current_size);
     tprobs  = _probs  + _confs_no;
 
     constexpr_if(tgetConfs)
     {
-        if(allDimSizeofInt > 0 && new_size > SIZE_MAX / static_cast<size_t>(allDimSizeofInt))
+        if(allDim > 0 && new_size > SIZE_MAX / static_cast<size_t>(allDim))
             throw std::bad_alloc();
-        int* tmp_confs = reinterpret_cast<int*>(realloc(_confs,  new_size * allDimSizeofInt));
-        if(tmp_confs == nullptr)
-            throw std::bad_alloc();
-        _confs = tmp_confs;
+        const size_t new_ints = new_size * static_cast<size_t>(allDim);
+        grow_array(_confs_owner, _confs, new_ints, current_size * static_cast<size_t>(allDim));
         tconfs = _confs + (allDim * _confs_no);
     }
     current_size = new_size;
 }
 
-template<bool tgetConfs> void FixedEnvelope::aligned_allocate_memory(size_t new_size)
+template<bool tgetConfs> void FixedEnvelope::allocate_memory(size_t new_size)
 {
-    // aligned_unique_ptr's small-allocation backend is aligned_alloc-based
-    // (overflow-checked) and release() hands back a plain, free()-compatible
-    // T* -- exactly what aligned_alloc()+free() already gave this function,
-    // just without duplicating the overflow-safe rounding logic here. This
-    // never grows afterwards (see the declaration in fixedEnvelopes.h), so
-    // there's nothing to gain from keeping the aligned_unique_ptr itself
-    // around past this one allocation.
-    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> masses_buf(new_size);
-    _masses = masses_buf.release();
+    fresh_array(_masses_owner, _masses, new_size);
     tmasses = _masses + _confs_no;
 
-    aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT> probs_buf(new_size);
-    _probs = probs_buf.release();
+    fresh_array(_probs_owner, _probs, new_size);
     tprobs  = _probs  + _confs_no;
 
     constexpr_if(tgetConfs)
     {
-        aligned_unique_ptr<int, DOUBLE_SIMD_ALIGNMENT> confs_buf(new_size * static_cast<size_t>(allDim));
-        _confs = confs_buf.release();
-        tconfs = _confs + (allDim * _confs_no);
-    }
-    current_size = new_size;
-}
-
-void FixedEnvelope::slow_reallocate_memory(size_t new_size)
-{
-    if(new_size > SIZE_MAX / sizeof(double))
-        throw std::bad_alloc();
-    double* tmp_masses = reinterpret_cast<double*>(realloc(_masses, new_size * sizeof(double)));
-    if(tmp_masses == nullptr)
-        throw std::bad_alloc();
-    _masses = tmp_masses;
-    tmasses = _masses + _confs_no;
-
-    double* tmp_probs = reinterpret_cast<double*>(realloc(_probs,  new_size * sizeof(double)));
-    if(tmp_probs == nullptr)
-        throw std::bad_alloc();
-    _probs = tmp_probs;
-    tprobs  = _probs  + _confs_no;
-
-    if(_confs != nullptr)
-    {
-        if(allDimSizeofInt > 0 && new_size > SIZE_MAX / static_cast<size_t>(allDimSizeofInt))
+        if(allDim > 0 && new_size > SIZE_MAX / static_cast<size_t>(allDim))
             throw std::bad_alloc();
-        int* tmp_confs = reinterpret_cast<int*>(realloc(_confs,  new_size * allDimSizeofInt));
-        if(tmp_confs == nullptr)
-            throw std::bad_alloc();
-        _confs = tmp_confs;
+        fresh_array(_confs_owner, _confs, new_size * static_cast<size_t>(allDim));
         tconfs = _confs + (allDim * _confs_no);
     }
     current_size = new_size;
@@ -801,7 +801,9 @@ template<bool tgetConfs> void FixedEnvelope::threshold_init(Iso&& iso, double th
     this->allDim = generator.getAllDim();
     this->allDimSizeofInt = this->allDim * sizeof(int);
 
-    this->aligned_allocate_memory<tgetConfs>(tab_size);
+    // count_confs() has already fixed the exact output size, so this allocates
+    // it once and never grows.
+    this->allocate_memory<tgetConfs>(tab_size);
 
     double* ttmasses = this->_masses;
     double* ttprobs = this->_probs;
@@ -819,29 +821,27 @@ template<bool tgetConfs> void FixedEnvelope::threshold_init(Iso&& iso, double th
     }
     else
     {
-#if ISOSPEC_HAS_SIMD
-        // SIMD fill. Each marginal-0 run (one per higher-dimensional carry state) starts
-        // at index 0 and descends until it drops below the cutoff; we batch the bulk of a
-        // run W-wide and drain the < W tail scalar.
+        // Batched fill. Each marginal-0 run (one per higher-dimensional carry state)
+        // starts at index 0 and descends until it drops below the cutoff; the kernel
+        // takes the bulk of a run W at a time and the < W tail is drained scalar.
+        // Which build of the kernel runs is decided from the CPU, once -- see
+        // isa_kernels.h. When the toolchain has no <experimental/simd> at all the
+        // kernel emits nothing and the scalar drain below does the whole job.
         //
-        // Convention bridge: simd_massprobs()/advanceToNextConfiguration_no_carry() use
-        // "lProbs_ptr points at the last-emitted config" (advance, then emit), matching the
-        // generator's initial position of one-before-index-0. carry() instead leaves
-        // lProbs_ptr *at* the index-0 config to be emitted. So after each successful carry
-        // we emit that index-0 config scalar (it is always above the cutoff when carry()
-        // succeeds, exactly as the scalar path relies on), which restores the last-emitted
-        // convention and lets the next simd_massprobs resume cleanly from index 1.
-        simd_double simd_masses;
-        simd_double simd_probs;
+        // Convention bridge: the kernel and advanceToNextConfiguration_no_carry()
+        // both use "lProbs_ptr points at the last-emitted config" (advance, then
+        // emit), matching the generator's initial position of one-before-index-0.
+        // carry() instead leaves lProbs_ptr *at* the index-0 config to be emitted.
+        // So after each successful carry we emit that index-0 config scalar (it is
+        // always above the cutoff when carry() succeeds, exactly as the scalar path
+        // relies on), which restores the last-emitted convention and lets the next
+        // batch resume cleanly from index 1.
+        const isa_fill_run_fn fill_run = isa_kernels().fill_run;
         do {
-            while(generator.simd_massprobs(simd_masses, simd_probs))
-            {
-                // Output is packed contiguously and the scalar tail advances the pointers
-                // by a non-multiple of W each run, so the store target is not W-aligned in
-                // general -> element_aligned (unaligned) store.
-                simd_masses.copy_to(ttmasses, simd_ns::element_aligned); ttmasses += simd_masses.size();
-                simd_probs.copy_to(ttprobs, simd_ns::element_aligned); ttprobs += simd_probs.size();
-            }
+            const size_t batched = generator.batch_fill_run(fill_run, ttmasses, ttprobs);
+            ttmasses += batched;
+            ttprobs  += batched;
+
             while(generator.advanceToNextConfiguration_no_carry())
             {
                 *ttmasses = generator.mass(); ttmasses++;
@@ -852,13 +852,6 @@ template<bool tgetConfs> void FixedEnvelope::threshold_init(Iso&& iso, double th
             *ttmasses = generator.mass(); ttmasses++;
             *ttprobs = generator.prob(); ttprobs++;
         } while(true);
-#else
-        while(generator.advanceToNextConfiguration())
-        {
-            *ttmasses = generator.mass(); ttmasses++;
-            *ttprobs = generator.prob(); ttprobs++;
-        }
-#endif
     }
 
     // The count_confs pre-pass fixes tab_size to the exact number of above-threshold
@@ -873,6 +866,37 @@ template<bool tgetConfs> void FixedEnvelope::threshold_init(Iso&& iso, double th
 template void FixedEnvelope::threshold_init<true>(Iso&& iso, double threshold, bool absolute);
 template void FixedEnvelope::threshold_init<false>(Iso&& iso, double threshold, bool absolute);
 
+
+// Left deliberately unbatched, unlike threshold_init()'s fill: the layered
+// generator's runs over marginal 0 are far too short for it. A layer admits
+// only configurations whose log-probability falls in a thin band, and for any
+// fixed choice of the higher marginals very few of marginal 0's fall in it --
+// measured at 1.36 configurations per run (37889 configurations over 27863 runs,
+// C520H817N139O147S8 to p=0.99999), where a W=4 batch needs 5. Batching it
+// anyway fires on 0.0% of configurations and costs 1-4% in the probe it adds per
+// run. Widening the layers does not rescue it either: at a -50 nat cap (vs the
+// -5 of ISOSPEC_TOTALPROB_LAYER_MAXSTEP) the batch still covers only 2.8% of
+// configurations, while generating 13% more of them.
+
+template<bool tgetConfs> void FixedEnvelope::store_layer(IsoLayeredGenerator& generator)
+{
+    while(generator.advanceToNextConfigurationWithinLayer())
+        this->template addConfILG<tgetConfs>(generator);
+}
+
+template<bool tgetConfs> bool FixedEnvelope::store_layer_to_prob(IsoLayeredGenerator& generator,
+                                                                 double& prob_so_far,
+                                                                 double target_total_prob)
+{
+    while(generator.advanceToNextConfigurationWithinLayer())
+    {
+        this->template addConfILG<tgetConfs>(generator);
+        prob_so_far += *(tprobs-1);  // The just-stored probability
+        if(prob_so_far >= target_total_prob)
+            return true;
+    }
+    return false;
+}
 
 template<bool tgetConfs> void FixedEnvelope::total_prob_init(Iso&& iso, double target_total_prob, bool optimize)
 {
@@ -903,30 +927,19 @@ template<bool tgetConfs> void FixedEnvelope::total_prob_init(Iso&& iso, double t
     do
     {  // Store confs until we accumulate more prob than needed - and, if optimizing,
        // store also the rest of the last layer
-        while(generator.advanceToNextConfigurationWithinLayer())
+        if(this->template store_layer_to_prob<tgetConfs>(generator, prob_so_far, target_total_prob))
         {
-            this->template addConfILG<tgetConfs>(generator);
-            prob_so_far += *(tprobs-1);  // The just-stored probability
-            if(prob_so_far >= target_total_prob)
-            {
-                if (optimize)
-                {
-                    while(generator.advanceToNextConfigurationWithinLayer())
-                        this->template addConfILG<tgetConfs>(generator);
-                    break;
-                }
-                else
-                    return;
-            }
-        }
-        if(prob_so_far >= target_total_prob)
+            if(!optimize)
+                return;
+            this->template store_layer<tgetConfs>(generator);
             break;
+        }
 
         last_switch = this->_confs_no;
         prob_at_last_switch = prob_so_far;
 
         layer_delta = sum_above - log1p(-prob_so_far);
-        layer_delta = (std::max)((std::min)(layer_delta, -0.1), -5.0);
+        layer_delta = (std::max)((std::min)(layer_delta, -0.1), ISOSPEC_TOTALPROB_LAYER_MAXSTEP);
     } while(generator.nextLayer(layer_delta));
 
     if(!optimize || prob_so_far <= target_total_prob)
@@ -986,11 +999,13 @@ template<bool tgetConfs> void FixedEnvelope::total_prob_init(Iso&& iso, double t
     constexpr_if(tgetConfs)
         free(conf_swapspace);
 
+    // Set before the shrink below, so that the tmasses/tprobs/tconfs cursors it
+    // recomputes land inside the smaller buffer rather than past its end.
+    this->_confs_no = end;
+
     if(end <= current_size/2)
         // Overhead in memory of 2x or more, shrink to fit
         this->template reallocate_memory<tgetConfs>(end);
-
-    this->_confs_no = end;
 }
 
 template void FixedEnvelope::total_prob_init<true>(Iso&& iso, double target_total_prob, bool optimize);
@@ -1079,8 +1094,7 @@ static ISOSPEC_FORCE_INLINE std::ptrdiff_t bin_index(double mass, double hwmm, d
 
 // Scatter a generator's entire output into the dense bin accumulator `acc` (used
 // for the target>=1 full-enumeration path).  Returns false if empty.
-template<typename GenType>
-static bool fill_bins_full(GenType& generator,
+static bool fill_bins_full(IsoThresholdGenerator& generator,
                            double* acc,
                            double hwmm,
                            double inv_bin_width,
@@ -1096,8 +1110,21 @@ static bool fill_bins_full(GenType& generator,
     nonzero_idx = bin_index(generator.mass(), hwmm, inv_bin_width);
     acc[nonzero_idx] = generator.prob();
 
-    while(generator.advanceToNextConfiguration())
+    // Same batching as threshold_init()'s fill, including the carry convention:
+    // the seeding loop above left the pointer on the configuration it emitted,
+    // and IsoThresholdGenerator::carry() likewise leaves it on the index-0
+    // configuration of the next run, so that one is scattered by hand before
+    // batching resumes at index 1.
+    const isa_bin_run_fn bin_run = isa_kernels().bin_run;
+    do
+    {
+        generator.batch_bin_run(bin_run, acc, hwmm, inv_bin_width);
+        while(generator.advanceToNextConfiguration_no_carry())
+            acc[bin_index(generator.mass(), hwmm, inv_bin_width)] += generator.prob();
+        if(!generator.carry())
+            break;
         acc[bin_index(generator.mass(), hwmm, inv_bin_width)] += generator.prob();
+    } while(true);
 
     return true;
 }
@@ -1121,6 +1148,10 @@ static bool fill_bins_to_prob(IsoLayeredGenerator& generator,
 
     do
     {
+        // Unbatched, deliberately: see the note on store_layer() -- the layered
+        // generator's runs over marginal 0 are ~1.4 configurations long, so the
+        // batched kernel never fires here. (Binned()'s other filler, over the
+        // threshold generator, does batch and does gain from it.)
         while(generator.advanceToNextConfigurationWithinLayer())
         {
             double prob = generator.prob();
@@ -1142,15 +1173,7 @@ static bool fill_bins_to_prob(IsoLayeredGenerator& generator,
         }
 
         layer_delta = sum_above - log1p(-prob_so_far);
-        // Cap the widest step.  total_prob_init uses -5.0, but it trims afterwards
-        // so overshoot is harmless there; Binned keeps everything it generates, so
-        // a step that overshoots the target is pure waste.  -3.0 measured as a
-        // uniform ~16-22% win over the old fixed -2.0 step across small and large
-        // molecules with no overshoot, whereas -5.0 regressed on large ones.
-        // Overridable at build time for retuning.
-#ifndef ISOSPEC_BINNED_LAYER_MAXSTEP
-#  define ISOSPEC_BINNED_LAYER_MAXSTEP (-3.0)
-#endif
+        // Cap the widest step; see ISOSPEC_BINNED_LAYER_MAXSTEP in fixedEnvelopes.h.
         layer_delta = (std::max)((std::min)(layer_delta, -0.1), ISOSPEC_BINNED_LAYER_MAXSTEP);
     } while(generator.nextLayer(layer_delta));
 
@@ -1214,7 +1237,7 @@ FixedEnvelope FixedEnvelope::Binned(Iso&& iso, double target_total_prob, double 
         // descending layer-by-layer to the least-probable peak.  Mirrors the
         // >= 1.0 fast path in total_prob_init.
         IsoThresholdGenerator generator(std::move(iso), 0.0, true);
-        non_empty = fill_bins_full<IsoThresholdGenerator>(
+        non_empty = fill_bins_full(
                         generator, acc, hwmm, inv_bin_width, nonzero_idx);
     }
     else

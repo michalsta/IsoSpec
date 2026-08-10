@@ -42,11 +42,12 @@ struct Tally {
     bool clean() const { return failed == 0 && checked > 0; }
 };
 
-// The runtime page-size threshold aligned_unique_ptr::realloc() switches
-// backend at; only meaningful (and only compiled in) where the VM backend
-// exists at all.
+// The allocation size (in bytes) at which aligned_unique_ptr::realloc() switches
+// to the VM-backed backend; only meaningful (and only compiled in) where that
+// backend exists at all.  Not simply the page size -- see
+// ISOSPEC_ALIGNED_PTR_VM_THRESHOLD for why it has to be a good deal larger.
 #if ISOSPEC_ALIGNED_PTR_HAVE_VM_REALLOC
-std::size_t page_size() { return aligned_ptr_detail::os_page_size(); }
+std::size_t vm_threshold() { return aligned_ptr_detail::vm_backend_threshold(); }
 #endif
 
 }  // namespace
@@ -157,30 +158,30 @@ TEST_CASE("aligned_unique_ptr: n*sizeof(T) overflow is rejected, not wrapped") {
 #if ISOSPEC_ALIGNED_PTR_HAVE_VM_REALLOC
 
 TEST_CASE("aligned_unique_ptr: realloc crossing the VM threshold preserves data") {
-    const std::size_t page_elems = page_size() / sizeof(double);
+    const std::size_t thresh_elems = vm_threshold() / sizeof(double);
 
     aligned_unique_ptr<double, 32> p(8);
     for (int i = 0; i < 8; i++) p[i] = i + 1.0;
 
-    // Still below threshold: one element short of a full page.
-    p.realloc(page_elems - 1);
+    // Still below threshold: one element short of it.
+    p.realloc(thresh_elems - 1);
     for (int i = 0; i < 8; i++) CHECK(p[i] == i + 1.0);
-    for (std::size_t i = 8; i < page_elems - 1; i++) p[i] = static_cast<double>(i);
+    for (std::size_t i = 8; i < thresh_elems - 1; i++) p[i] = static_cast<double>(i);
 
     // Crosses the threshold now.
-    const std::size_t past = page_elems + 16;
+    const std::size_t past = thresh_elems + 16;
     p.realloc(past);
     for (int i = 0; i < 8; i++) CHECK(p[i] == i + 1.0);
-    for (std::size_t i = 8; i < page_elems - 1; i++) CHECK(p[i] == static_cast<double>(i));
-    for (std::size_t i = page_elems - 1; i < past; i++) p[i] = 3.5 * static_cast<double>(i);
+    for (std::size_t i = 8; i < thresh_elems - 1; i++) CHECK(p[i] == static_cast<double>(i));
+    for (std::size_t i = thresh_elems - 1; i < past; i++) p[i] = 3.5 * static_cast<double>(i);
 
     // Grow again while already mapped -- exercises mremap/mach_vm_remap/
     // VirtualAlloc-commit rather than the crossing-transition copy above.
     const std::size_t bigger = past * 4;
     p.realloc(bigger);
     for (int i = 0; i < 8; i++) CHECK(p[i] == i + 1.0);
-    for (std::size_t i = 8; i < page_elems - 1; i++) CHECK(p[i] == static_cast<double>(i));
-    for (std::size_t i = page_elems - 1; i < past; i++) CHECK(p[i] == doctest::Approx(3.5 * static_cast<double>(i)));
+    for (std::size_t i = 8; i < thresh_elems - 1; i++) CHECK(p[i] == static_cast<double>(i));
+    for (std::size_t i = thresh_elems - 1; i < past; i++) CHECK(p[i] == doctest::Approx(3.5 * static_cast<double>(i)));
     for (std::size_t i = past; i < bigger; i++) p[i] = static_cast<double>(i) - 1000.0;
 
     // Shrink while mapped.
@@ -197,7 +198,7 @@ TEST_CASE("aligned_unique_ptr: realloc crossing the VM threshold preserves data"
 }
 
 TEST_CASE("aligned_unique_ptr: repeated grow/shrink cycles around the threshold keep data intact (stress)") {
-    const std::size_t page_elems = page_size() / sizeof(double);
+    const std::size_t thresh_elems = vm_threshold() / sizeof(double);
     std::mt19937 rng(12345);
 
     aligned_unique_ptr<double, 32> p(1);
@@ -205,7 +206,7 @@ TEST_CASE("aligned_unique_ptr: repeated grow/shrink cycles around the threshold 
     std::vector<double> shadow(1, 0.0);
 
     Tally t;
-    std::uniform_int_distribution<std::size_t> size_dist(1, page_elems * 3);
+    std::uniform_int_distribution<std::size_t> size_dist(1, thresh_elems * 3);
     for (int round = 0; round < 40; round++) {
         std::size_t new_n = size_dist(rng);
         p.realloc(new_n);
@@ -240,7 +241,7 @@ TEST_CASE("aligned_unique_ptr: release() is always free()-compatible") {
 
 #if ISOSPEC_ALIGNED_PTR_HAVE_VM_REALLOC
     SUBCASE("VM-backed: release() materialises a free()-compatible copy") {
-        const std::size_t n = page_size() / sizeof(double) + 64;
+        const std::size_t n = vm_threshold() / sizeof(double) + 64;
         aligned_unique_ptr<double, 32> p(1);
         p.realloc(n);  // crosses the threshold -> VM-backed
         for (std::size_t i = 0; i < n; i++) p[i] = static_cast<double>(i);
@@ -285,7 +286,7 @@ TEST_CASE("aligned_unique_ptr: release_with_deleter() avoids copying and still f
 
 #if ISOSPEC_ALIGNED_PTR_HAVE_VM_REALLOC
     SUBCASE("VM-backed: no copy, and the deleter frees the *actual* backing size") {
-        const std::size_t n = page_size() / sizeof(double) + 64;
+        const std::size_t n = vm_threshold() / sizeof(double) + 64;
         aligned_unique_ptr<double, 32> p(1);
         p.realloc(n);
         for (std::size_t i = 0; i < n; i++) p[i] = static_cast<double>(i) * 2.0;

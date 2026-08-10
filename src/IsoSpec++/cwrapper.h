@@ -150,10 +150,33 @@ ISOSPEC_C_API void* setupFixedEnvelopeWithConfs(double* masses, double* probs, i
 ISOSPEC_C_API void* copyFixedEnvelope(void* other);
 ISOSPEC_C_API void deleteFixedEnvelope(void* tabulator, bool releaseEverything);
 
+/* These three hand the envelope's array over to the caller, who must free() it
+   (with freeReleasedArray) once done. That costs a copy of the whole array
+   whenever the envelope did not allocate it with plain malloc() -- which is the
+   normal case now that everything the library produces is SIMD-aligned, and one
+   that grew large enough is mapped straight from the OS. Prefer the *WithDeleter
+   variants below, which never copy. */
 ISOSPEC_C_API const double* massesFixedEnvelope(void* tabulator);
 ISOSPEC_C_API const double* probsFixedEnvelope(void* tabulator);
 ISOSPEC_C_API const int*    confsFixedEnvelope(void* tabulator);
 ISOSPEC_C_API size_t confs_noFixedEnvelope(void* tabulator);
+
+/* How a buffer obtained from one of the *WithDeleter entry points below has to
+   be given back: deleter(array, size), exactly once, with the very size that
+   came out alongside the pointer. free() is not, in general, the right answer.
+   Call it through freeReleasedArrayWithDeleter() rather than directly, so
+   callers that cannot invoke a raw function pointer (cffi, say) need not. */
+typedef void (*IsoSpecArrayDeleter)(void* array, size_t size);
+
+/* Zero-copy counterparts of the three getters above: each yields the array's
+   pointer and writes out the (size, deleter) pair needed to release it. Both
+   out-parameters may be NULL if not wanted -- but then the array can only be
+   leaked. A NULL return means either an empty envelope or an error. */
+ISOSPEC_C_API double* massesFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out);
+ISOSPEC_C_API double* probsFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out);
+ISOSPEC_C_API int*    confsFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out);
+
+ISOSPEC_C_API void freeReleasedArrayWithDeleter(void* array, size_t size, IsoSpecArrayDeleter deleter);
 
 ISOSPEC_C_API double empiricAverageMass(void* tabulator);
 ISOSPEC_C_API double empiricVariance(void* tabulator);
@@ -187,6 +210,12 @@ ISOSPEC_C_API void sortEnvelopeByMass(void* envelope);
 ISOSPEC_C_API void sortEnvelopeByProb(void* envelope);
 
 ISOSPEC_C_API void parse_fasta_c(const char* fasta, int atomCounts[6]);
+
+/* What the library's batched kernels are vectorised to on this machine, as a
+   stable lowercase token: "scalar", "sse2", "avx", "avx2", "avx512", "neon", or
+   "simd" for a vector unit with no name here. Never NULL; a static string, so
+   it must NOT be freed. See active_simd_level() in isa_kernels.h. */
+ISOSPEC_C_API const char* activeSimdLevel(void);
 
 
 #ifdef __cplusplus

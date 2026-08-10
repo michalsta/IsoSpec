@@ -292,6 +292,34 @@ static void test_fasta_and_arrays(void)
     CHECK_CLOSE(values[0], 12.0, 1e-12);
 }
 
+/* activeSimdLevel() is the only entry point returning a string constant: check
+ * that it crosses the ABI as one, and that the token is from the documented
+ * vocabulary -- callers switch on these. */
+static void test_simd_level(void)
+{
+    static const char* const known[] = {
+        "scalar", "sse2", "avx", "avx2", "avx512", "neon", "simd"
+    };
+    const char* level = activeSimdLevel();
+    size_t i;
+    bool recognised = false;
+
+    CHECK(level != NULL);
+    if (level == NULL)
+        return;
+    CHECK(level[0] != '\0');
+
+    for (i = 0; i < sizeof(known) / sizeof(known[0]); ++i)
+        if (strcmp(level, known[i]) == 0)
+            recognised = true;
+    CHECK(recognised);
+    if (!recognised)
+        printf("  unrecognised SIMD level: \"%s\"\n", level);
+
+    /* A static string: the same pointer every time, and not ours to free. */
+    CHECK(activeSimdLevel() == level);
+}
+
 int main(void)
 {
     test_iso_accessors();
@@ -300,6 +328,7 @@ int main(void)
     test_other_generators();
     test_envelopes();
     test_fasta_and_arrays();
+    test_simd_level();
 
     if (failures == 0) {
         printf("C API tests: all checks passed\n");

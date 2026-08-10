@@ -15,7 +15,18 @@ cmake_minimum_required(VERSION 3.12)
 ############################################################
 # Basic information about project
 
-project(IsoSpec VERSION 2.3.4
+# The version lives in one place only: the VERSION file at the top of the tree.
+# pyproject.toml reads that same file (see its [[tool.dynamic-metadata]] block),
+# so the C++ library and the Python package can no longer drift apart the way
+# they had by 2.4.0, when CMake said 2.3.4 and the wheel said 2.3.5.
+#
+# Read before project(), which is where it is needed. Keep the file to a single
+# bare version number on one line: everything reading it -- CMake here, the
+# wheel's regex, anything a packager writes -- assumes exactly that.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" ISOSPEC_VERSION_RAW)
+string(STRIP "${ISOSPEC_VERSION_RAW}" ISOSPEC_VERSION)
+
+project(IsoSpec VERSION ${ISOSPEC_VERSION}
     DESCRIPTION "A program to calculate isotopic clusters"
     HOMEPAGE_URL "https://github.com/MatteoLacki/IsoSpec")
 
@@ -26,7 +37,29 @@ project(IsoSpec VERSION 2.3.4
 # ${PROJECT_NAME}_VERSION_PATCH
 
 message("Library version: ${${PROJECT_NAME}_VERSION}")
-set(${PROJECT_NAME}_LIB_SOVERSION "${${PROJECT_NAME}_VERSION_MAJOR}")
+
+# The soname carries MAJOR.MINOR, not just MAJOR.
+#
+# It has to encode ABI identity, and this library's ABI is not tracked closely
+# enough for a hand-maintained counter to be trustworthy: 2.4.0 grew
+# FixedEnvelope from 96 to 216 bytes (it gained the ownership members behind the
+# aligned-allocation work) and that would have shipped under the unchanged
+# soname libIsoSpec++.so.2, silently corrupting every program still linked
+# against 2.3.x -- FixedEnvelope is returned by value from FromThreshold() and
+# friends, so callers stack-allocate it.
+#
+# Tying the soname to MINOR makes that mistake unrepresentable, at the price of
+# forcing dependents to rebuild on every minor release even when nothing broke.
+# For a library with this few reverse dependencies that is the right trade.
+#
+# It does NOT cover an ABI break within a patch series (2.4.0 -> 2.4.1 share a
+# soname); the layout assertion in tests/C++/test_fixed_envelope.cpp is what
+# guards that.
+#
+# Note for packagers: bumping MINOR now renames the Debian binary package
+# (libisospec++2t64 -> libisospec++2.4t64) and needs the usual transition;
+# debian/rules hardcodes ISOSPEC_LIB_SOVERSION and must be updated to match.
+set(${PROJECT_NAME}_LIB_SOVERSION "${${PROJECT_NAME}_VERSION_MAJOR}.${${PROJECT_NAME}_VERSION_MINOR}")
 message("Library soname: ${${PROJECT_NAME}_LIB_SOVERSION}")
 
 # Command to enable debug mode

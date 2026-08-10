@@ -280,6 +280,41 @@ TEST_CASE("fixed envelopes through the C ABI") {
         deleteFixedEnvelope(env, false);
     }
 
+    SUBCASE("threshold envelope released without copying") {
+        // The *WithDeleter getters hand over the library's own buffers as they
+        // are -- SIMD-aligned, and above a page mapped straight from the OS --
+        // so they must be given back through the deleter that comes with them,
+        // not free(). Contents must match what the copying getters produce.
+        IsoHandle h(c_iso_for("C10H20O2", isoNo, atomCnt, masses, probs));
+        void* env = setupThresholdFixedEnvelope(h.p, 1e-6, true, false);
+        REQUIRE(env != nullptr);
+        const std::size_t n = confs_noFixedEnvelope(env);
+
+        size_t m_bytes = 0, p_bytes = 0;
+        IsoSpecArrayDeleter m_del = nullptr, p_del = nullptr;
+        double* m = massesFixedEnvelopeWithDeleter(env, &m_bytes, &m_del);
+        double* p = probsFixedEnvelopeWithDeleter(env, &p_bytes, &p_del);
+        REQUIRE(m != nullptr);
+        REQUIRE(p != nullptr);
+        REQUIRE(m_del != nullptr);
+        REQUIRE(p_del != nullptr);
+        CHECK(m_bytes >= n * sizeof(double));
+        // Released, so gone from the envelope -- by either getter.
+        CHECK(massesFixedEnvelopeWithDeleter(env, nullptr, nullptr) == nullptr);
+        CHECK(probsFixedEnvelope(env) == nullptr);
+
+        FixedEnvelope reference = FixedEnvelope::FromThreshold(Iso("C10H20O2"), 1e-6, true, false);
+        REQUIRE(n == reference.confs_no());
+        for (std::size_t i = 0; i < n; ++i) {
+            REQUIRE(m[i] == reference.masses()[i]);
+            REQUIRE(p[i] == reference.probs()[i]);
+        }
+
+        freeReleasedArrayWithDeleter(m, m_bytes, m_del);
+        freeReleasedArrayWithDeleter(p, p_bytes, p_del);
+        deleteFixedEnvelope(env, false);
+    }
+
     SUBCASE("threshold envelope with configurations") {
         IsoHandle h(c_iso_for("H2O1", isoNo, atomCnt, masses, probs));
         void* env = setupThresholdFixedEnvelope(h.p, 0.0, true, true);
@@ -353,6 +388,19 @@ TEST_CASE("envelopes built from caller-owned arrays") {
 
     // release_everything: the envelope must not free what it does not own.
     deleteFixedEnvelope(env, true);
+
+    // The same, one array at a time, through the zero-copy release: an adopted
+    // buffer comes back as itself, with free() for a deleter (calling which is
+    // exactly what the caller must NOT do here, since it owns the storage).
+    void* env_z = setupFixedEnvelope(masses, probs, 3, false, false, NAN);
+    REQUIRE(env_z != nullptr);
+    size_t nbytes = 12345;
+    IsoSpecArrayDeleter del = nullptr;
+    double* released = massesFixedEnvelopeWithDeleter(env_z, &nbytes, &del);
+    CHECK(released == masses);
+    CHECK(del != nullptr);
+    CHECK(massesFixedEnvelopeWithDeleter(env_z, &nbytes, &del) == nullptr);
+    deleteFixedEnvelope(env_z, true);
 
     int confs[3] = {1, 2, 3};
     void* env2 = setupFixedEnvelopeWithConfs(masses, probs, confs, 3, 1, true, false, 1.0);

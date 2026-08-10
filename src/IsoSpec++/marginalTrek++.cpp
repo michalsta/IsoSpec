@@ -613,12 +613,7 @@ allocator(isotopeNo, tabSize)
         masses[ii] = calc_mass(confs[ii], atom_masses, isotopeNo);
     }
 
-    #if ISOSPEC_HAS_SIMD
-        constexpr size_t no_guardians = simd_double::size();
-    #else
-        constexpr size_t no_guardians = 1;
-    #endif
-    for(unsigned int ii = 0; ii < no_guardians; ii++)
+    for(size_t ii = 0; ii < ISOSPEC_LPROB_GUARDIANS; ii++)
         lProbs.push_back(-std::numeric_limits<double>::infinity());
 }
 
@@ -639,7 +634,8 @@ equalizer(isotopeNo), keyHasher(isotopeNo)
     fringe.push_back(mode_conf);
     lProbs.push_back(std::numeric_limits<double>::infinity());
     fringe_unn_lprobs.push_back(unnormalized_logProb(mode_conf));
-    lProbs.push_back(-std::numeric_limits<double>::infinity());
+    for(size_t ii = 0; ii < ISOSPEC_LPROB_GUARDIANS; ii++)
+        lProbs.push_back(-std::numeric_limits<double>::infinity());
     guarded_lProbs = lProbs.data()+1;
 }
 
@@ -649,7 +645,8 @@ bool LayeredMarginal::extend(double new_threshold, bool do_sort)
     if(fringe.empty())
         return false;
 
-    lProbs.pop_back();  // Remove the +inf guardian
+    for(size_t ii = 0; ii < ISOSPEC_LPROB_GUARDIANS; ii++)
+        lProbs.pop_back();  // Remove the trailing -inf guardians; restored at the end
 
     pod_vector<Conf> new_fringe;
     pod_vector<double> new_fringe_unn_lprobs;
@@ -747,7 +744,8 @@ bool LayeredMarginal::extend(double new_threshold, bool do_sort)
         masses.push_back(calc_mass(configurations[ii], atom_masses, isotopeNo));
     }
 
-    lProbs.push_back(-std::numeric_limits<double>::infinity());  // Restore guardian
+    for(size_t ii = 0; ii < ISOSPEC_LPROB_GUARDIANS; ii++)
+        lProbs.push_back(-std::numeric_limits<double>::infinity());  // Restore guardians
 
     guarded_lProbs = lProbs.data()+1;  // Vector might have reallocated its backing storage
 
@@ -794,7 +792,7 @@ SingleAtomMarginal<add_guards>::SingleAtomMarginal(Marginal&& m, int, int)
 
     if constexpr (add_guards)
     {
-        lProbs.reserve(isotopeNo+2);
+        lProbs.reserve(isotopeNo+1+ISOSPEC_LPROB_GUARDIANS);
         lProbs.push_back(std::numeric_limits<double>::infinity());
     }
     else
@@ -809,7 +807,8 @@ SingleAtomMarginal<add_guards>::SingleAtomMarginal(Marginal&& m, int, int)
 
     if constexpr (add_guards)
    {
-        lProbs.push_back(-std::numeric_limits<double>::infinity());
+        for(size_t ii = 0; ii < ISOSPEC_LPROB_GUARDIANS; ii++)
+            lProbs.push_back(-std::numeric_limits<double>::infinity());
         guarded_lProbs = lProbs.data()+1;
     }
     else

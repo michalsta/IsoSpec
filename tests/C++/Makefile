@@ -34,6 +34,27 @@ DEBUGFLAGS := -O0 -g -DISOSPEC_DEBUG -DDEBUG -D_GLIBCXX_DEBUG
 ASANFLAGS  := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all
 MSANFLAGS  := -O1 -g -fsanitize=memory,undefined -DISOSPEC_TESTS_MEMSAN
 
+# --- runtime ISA dispatch ---------------------------------------------------
+# The tests exercise the dispatching build, so each configuration also compiles
+# the per-instruction-set-level kernels into their own objects.  Their flags are
+# the configuration's minus -march: the baseline level has to stay baseline for
+# the cross-level tests to mean anything.  Everything else about the flags must
+# match the rest of the configuration -- _GLIBCXX_DEBUG and the sanitizers change
+# layouts and interpositions, so mixing them across objects is an ODR violation.
+ISA_DIR      := ../../src/IsoSpec++
+ISA_DEFS     := -DISOSPEC_ISA_DISPATCH=1
+ISA_LEVELS   := baseline avx v3 v4
+ISA_OPTFLAGS := -O3 -g
+
+isa-accepts = $(shell echo 'int main(){}' | $(CXX_GCC) $(1) -x c++ - -o /dev/null >/dev/null 2>&1 && echo yes)
+AVX_FLAGS := -mavx
+V3_FLAGS := -mavx2 -mfma
+V4_FLAGS := -mavx512f -mavx512bw -mavx512dq -mavx512vl
+ISA_FLAGS_baseline :=
+ISA_FLAGS_avx := $(if $(call isa-accepts,$(AVX_FLAGS)),$(AVX_FLAGS))
+ISA_FLAGS_v3 := $(if $(call isa-accepts,$(V3_FLAGS)),$(V3_FLAGS))
+ISA_FLAGS_v4 := $(if $(call isa-accepts,$(V4_FLAGS)),$(V4_FLAGS))
+
 # doctest suite: tests_main.cpp defines main(); the rest register TEST_CASEs.
 # Keep this list alphabetical after tests_main.cpp.
 TEST_SRCS := tests_main.cpp \
@@ -48,6 +69,7 @@ TEST_SRCS := tests_main.cpp \
              test_fixed_envelope.cpp \
              test_formula.cpp \
              test_generators.cpp \
+             test_isa_dispatch.cpp \
              test_marginals.cpp \
              test_math.cpp \
              test_oracle.cpp \
@@ -69,16 +91,24 @@ all: tests cli
 
 # --- test-binary matrix -----------------------------------------------------
 # $(1)=config name  $(2)=compiler  $(3)=extra flags
-define TEST_rule
-$(BUILD)/run_tests_$(1): $(TEST_DEPS) | $(BUILD)
-	$(2) $(STD) $(WARN) $(INC) $(3) $(TEST_SRCS) $(UNITY) -o $$@
+# $(1)=config  $(2)=compiler  $(3)=flags  $(4)=kernel flags (no -march)  $(5)=level
+define ISA_rule
+$(BUILD)/isa_$(5)_$(1).o: $(ISA_DIR)/isa_kernels_$(5).cpp $(LIB_SRCS) | $(BUILD)
+	$(2) $(STD) $(WARN) $(INC) $(4) $(ISA_FLAGS_$(5)) $(ISA_DEFS) -c $$< -o $$@
 endef
 
-$(eval $(call TEST_rule,gcc,$(CXX_GCC),$(OPTFLAGS)))
-$(eval $(call TEST_rule,clang,$(CXX_CLANG),$(OPTFLAGS)))
-$(eval $(call TEST_rule,dbg,$(CXX_GCC),$(DEBUGFLAGS)))
-$(eval $(call TEST_rule,asan,$(CXX_CLANG),$(ASANFLAGS)))
-$(eval $(call TEST_rule,memsan,$(CXX_CLANG),$(MSANFLAGS)))
+define TEST_rule
+$(foreach lvl,$(ISA_LEVELS),$(eval $(call ISA_rule,$(1),$(2),$(3),$(4),$(lvl))))
+ISA_OBJS_$(1) := $(foreach lvl,$(ISA_LEVELS),$(BUILD)/isa_$(lvl)_$(1).o)
+$(BUILD)/run_tests_$(1): $(TEST_DEPS) $$(ISA_OBJS_$(1)) | $(BUILD)
+	$(2) $(STD) $(WARN) $(INC) $(3) $(ISA_DEFS) $(TEST_SRCS) $(UNITY) $$(ISA_OBJS_$(1)) -o $$@
+endef
+
+$(eval $(call TEST_rule,gcc,$(CXX_GCC),$(OPTFLAGS),$(ISA_OPTFLAGS)))
+$(eval $(call TEST_rule,clang,$(CXX_CLANG),$(OPTFLAGS),$(ISA_OPTFLAGS)))
+$(eval $(call TEST_rule,dbg,$(CXX_GCC),$(DEBUGFLAGS),$(DEBUGFLAGS)))
+$(eval $(call TEST_rule,asan,$(CXX_CLANG),$(ASANFLAGS),$(ASANFLAGS)))
+$(eval $(call TEST_rule,memsan,$(CXX_CLANG),$(MSANFLAGS),$(MSANFLAGS)))
 
 DEFAULT_TEST_BINS := $(BUILD)/run_tests_gcc $(BUILD)/run_tests_clang \
                      $(BUILD)/run_tests_dbg $(BUILD)/run_tests_asan
@@ -103,8 +133,11 @@ test: $(DEFAULT_TEST_BINS) fasta_header_isolation
 COVFLAGS := -O0 -g --coverage -fprofile-abs-path
 COVDIR   := $(BUILD)/coverage
 
-$(COVDIR)/run_tests_cov: $(TEST_DEPS) | $(COVDIR)
-	$(CXX_GCC) $(STD) $(WARN) $(INC) $(COVFLAGS) $(TEST_SRCS) $(UNITY) -o $@
+$(foreach lvl,$(ISA_LEVELS),$(eval $(call ISA_rule,cov,$(CXX_GCC),$(COVFLAGS),$(COVFLAGS),$(lvl))))
+COV_ISA_OBJS := $(foreach lvl,$(ISA_LEVELS),$(BUILD)/isa_$(lvl)_cov.o)
+
+$(COVDIR)/run_tests_cov: $(TEST_DEPS) $(COV_ISA_OBJS) | $(COVDIR)
+	$(CXX_GCC) $(STD) $(WARN) $(INC) $(COVFLAGS) $(ISA_DEFS) $(TEST_SRCS) $(UNITY) $(COV_ISA_OBJS) -o $@
 
 coverage: $(COVDIR)/run_tests_cov
 	@rm -f $(COVDIR)/*.gcda

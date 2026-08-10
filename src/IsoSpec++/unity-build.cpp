@@ -37,4 +37,11 @@
 #include "fixedEnvelopes.cpp"   // NOLINT(build/include)
 #include "misc.cpp"             // NOLINT(build/include)
 
+// The ISA dispatcher belongs here: it is baseline code and must stay baseline.
+// The per-level kernels it selects between (isa_kernels_*.cpp) must NOT be
+// included -- each is its own translation unit compiled with its own -march, and
+// folding them in here would both defeat the purpose and, worse, let a raised
+// -march reach every inline function in the library. See isa_kernels.h.
+#include "isa_dispatch.cpp"     // NOLINT(build/include)
+
 #endif

@@ -5,8 +5,11 @@
 message("\n${BoldRed}Now configuring IsoSpec++/ for ${CMAKE_PROJECT_NAME}${ColourReset}\n")
 
 
+include(${CMAKE_CURRENT_LIST_DIR}/IsaDispatch.cmake)
+
 set(isospec_SRCS
 	unity-build.cpp
+	${isospec_ISA_SRCS}
 	)
 
 ######### The shared library #########

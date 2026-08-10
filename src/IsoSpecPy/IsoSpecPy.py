@@ -343,18 +343,31 @@ class IsoDistribution(object):
         if cobject is not None:
             self.size = isoFFI.clib.confs_noFixedEnvelope(cobject)
 
-            def wrap(typename, what, attrname, mult = 1):
-                if what is not None:
-                    x = isoFFI.ffi.gc(isoFFI.ffi.cast(typename + '[' + str(self.size*mult) + ']', what), isoFFI.clib.freeReleasedArray)
-                    setattr(self, attrname, x)
+            # The *WithDeleter getters hand the array over without copying it:
+            # the library's own buffers are SIMD-aligned, and a large one is
+            # mapped straight from the OS, so plain free() is not necessarily the
+            # right way to give them back. Each getter therefore writes out the
+            # (size, deleter) pair that releases this particular array, and we
+            # bind both into the ffi.gc destructor.
+            def wrap(typename, getter, attrname, mult = 1):
+                size_out = isoFFI.ffi.new("size_t*")
+                deleter_out = isoFFI.ffi.new("IsoSpecArrayDeleter*")
+                what = getter(cobject, size_out, deleter_out)
+                x = isoFFI.ffi.cast(typename + '[' + str(self.size*mult) + ']', what)
+                if what != isoFFI.ffi.NULL:
+                    # An empty envelope owns nothing, and has nothing to release.
+                    nbytes = size_out[0]
+                    deleter = deleter_out[0]
+                    x = isoFFI.ffi.gc(x, lambda p: isoFFI.clib.freeReleasedArrayWithDeleter(p, nbytes, deleter))
+                setattr(self, attrname, x)
 
-            wrap("double", isoFFI.clib.massesFixedEnvelope(cobject), "masses")
-            wrap("double", isoFFI.clib.probsFixedEnvelope(cobject), "probs")
+            wrap("double", isoFFI.clib.massesFixedEnvelopeWithDeleter, "masses")
+            wrap("double", isoFFI.clib.probsFixedEnvelopeWithDeleter, "probs")
 
             if get_confs:
                 # Must also be a subclass of Iso...
                 self.sum_isotope_numbers = sum(iso.isotopeNumbers)
-                wrap("int", isoFFI.clib.confsFixedEnvelope(cobject), "raw_confs", mult = self.sum_isotope_numbers)
+                wrap("int", isoFFI.clib.confsFixedEnvelopeWithDeleter, "raw_confs", mult = self.sum_isotope_numbers)
                 self.confs = ConfsPassthrough(lambda idx: self._get_conf(idx), self.size)
                 self.parse_conf = iso._get_parse_conf_fun()
 
@@ -860,4 +873,22 @@ class IsoStochasticGenerator(IsoGenerator):
         except AttributeError:
             pass
         super(IsoStochasticGenerator, self).__del__()
+
+
+def get_simd_level():
+    """Report what the bundled C++ library's vectorised kernels are running as.
+
+    The wheels carry several builds of the inner loops and choose one from the
+    CPU at import time, so this is a property of the machine as much as of the
+    build. Use it to tell an installation that vectorises from one that silently
+    does not -- on Windows, for instance, where the standard library provides no
+    <experimental/simd> and everything falls back to the scalar path.
+
+    Returns:
+        str: one of "scalar" (not vectorised at all), "sse2", "avx", "avx2",
+             "avx512", "neon", or "simd" for a vector unit the library has no
+             name for. New tokens may appear as instruction sets are added, so
+             treat an unfamiliar one as "some vector unit" rather than an error.
+    """
+    return isoFFI.ffi.string(isoFFI.clib.activeSimdLevel()).decode("ascii")
 

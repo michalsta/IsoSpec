@@ -23,6 +23,8 @@
 #include <vector>
 #include <algorithm>
 #include "platform.h"
+#include "iso_simd.h"
+#include "isa_kernels.h"
 #include "dirtyAllocator.h"
 #include "summator.h"
 #include "operators.h"
@@ -454,31 +456,31 @@ class ISOSPEC_EXPORT_SYMBOL IsoThresholdGenerator: public IsoGenerator
         return false;
     }
 
-#if ISOSPEC_HAS_SIMD
-    ISOSPEC_FORCE_INLINE bool simd_massprobs(simd_double& masses, simd_double& probs)
+    //! Hand the current marginal-0 run to a batched kernel, which consumes as
+    //! much of it as fills whole vectors and returns how many configurations it
+    //! emitted; the caller's scalar loop drains the rest.
+    /*! The kernel is passed in rather than called directly because which build
+        of it runs is decided at run time, from the CPU -- see isa_kernels.h.
+        Everything crossing that boundary is a plain pointer or double, so the
+        kernel can live in a translation unit compiled for another ISA. */
+    ISOSPEC_FORCE_INLINE size_t batch_fill_run(isa_fill_run_fn kernel, double* out_masses, double* out_probs)
     {
-        constexpr std::size_t W = simd_double::size();
-        // Lanes loaded below are indices cur+1 .. cur+W (cur = lProbs_ptr - start).
-        // lProbs is descending, so checking the highest index (cur+W) guards them all.
-        // The W trailing -inf guardians on lProbs make this read safe even at the run's end.
-        if(ISOSPEC_LIKELY(*(lProbs_ptr+W) >= lcfmsv))
-        {
-            // offset is only W-aligned within the first run (which starts one-before
-            // index 0); runs entered via carry() start at index 1, so the source is not
-            // W-aligned in general -> element_aligned (unaligned) loads.
-            size_t offset = lProbs_ptr - lProbs_ptr_start + 1;
-            probs.copy_from(marginalResults[0]->get_probs().get() + offset, simd_ns::element_aligned);
-            simd_double pp = partialProbs[1];
-            probs *= pp;
-            masses.copy_from(marginalResults[0]->get_masses().get() + offset, simd_ns::element_aligned);
-            simd_double mp = partialMasses[1];
-            masses += mp;
-            lProbs_ptr += W;
-            return true;
-        }
-        return false;
+        return kernel(&lProbs_ptr, lProbs_ptr_start,
+                      marginalResults[0]->get_masses_ptr(),
+                      marginalResults[0]->get_probs_ptr(),
+                      lcfmsv, partialMasses[1], partialProbs[1],
+                      out_masses, out_probs);
     }
-#endif
+
+    //! As above, but scattering into a dense bin accumulator.
+    ISOSPEC_FORCE_INLINE size_t batch_bin_run(isa_bin_run_fn kernel, double* acc, double hwmm, double inv_bin_width)
+    {
+        return kernel(&lProbs_ptr, lProbs_ptr_start,
+                      marginalResults[0]->get_masses_ptr(),
+                      marginalResults[0]->get_probs_ptr(),
+                      lcfmsv, partialMasses[1], partialProbs[1],
+                      acc, hwmm, inv_bin_width);
+    }
 
 
     ISOSPEC_FORCE_INLINE double lprob() const override final { return partialLProbs_second_val + (*(lProbs_ptr)); }
@@ -600,6 +602,11 @@ class ISOSPEC_EXPORT_SYMBOL IsoLayeredGeneratorTemplate : public IsoGenerator
         while(carry());  // NOLINT(whitespace/empty_loop_body) - cpplint bug, that's not an empty loop body, that's a do{...}while(...) construct
         return false;
     }
+
+    // Deliberately no simd_massprobs() counterpart to IsoThresholdGenerator's:
+    // a layer admits only a thin band of log-probabilities, so the runs this
+    // would batch are ~1.4 configurations long and it never fires. Measured;
+    // see the note on FixedEnvelope::store_layer().
 
     ISOSPEC_FORCE_INLINE double lprob() const override final { return partialLProbs_second_val + (*(lProbs_ptr)); };
     ISOSPEC_FORCE_INLINE double mass()  const override final { return partialMasses[1] + marginalResults[0]->get_mass(lProbs_ptr - lProbs_ptr_start); };

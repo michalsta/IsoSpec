@@ -95,6 +95,33 @@ inline std::size_t round_up_to_page(std::size_t bytes) noexcept
     return (bytes + ps - 1) / ps * ps;
 }
 
+// Smallest allocation realloc() will move onto the VM-backed backend.
+//
+// Not simply "one page": mapping fresh anonymous memory makes the kernel hand
+// out zero pages that then fault in one by one on first touch, and for a buffer
+// that is about to be overwritten wholesale that zeroing is pure waste. malloc,
+// by contrast, hands back memory the process already owns and has already
+// faulted -- which, in the loop-over-many-molecules pattern this library is
+// mostly used in, it almost always has. Measured on Alder Lake: routing a
+// ~1 MiB one-shot envelope fill through mmap instead of aligned_alloc cost
+// 1.85x. So the VM backend has to earn its faults, and it only can by saving
+// copies on repeated growth -- which needs the buffer to be big enough for
+// those copies to hurt more than the faults do. The same measurements put the
+// crossover for the doubling-growth fills at a few hundred KiB.
+//
+// Consequently: allocate once, at a known size -> stay on the small backend
+// (reset()); grow repeatedly -> realloc(), and cross over here. Overridable at
+// build time for retuning.
+#ifndef ISOSPEC_ALIGNED_PTR_VM_THRESHOLD
+#define ISOSPEC_ALIGNED_PTR_VM_THRESHOLD (std::size_t(256) << 10)  // 256 KiB
+#endif
+
+inline std::size_t vm_backend_threshold() noexcept
+{
+    const std::size_t ps = os_page_size();
+    return ISOSPEC_ALIGNED_PTR_VM_THRESHOLD < ps ? ps : ISOSPEC_ALIGNED_PTR_VM_THRESHOLD;
+}
+
 // Releases a VM-backed block given just (ptr, bytes), without the rest of a
 // vm_region's bookkeeping -- used by aligned_unique_ptr::release_with_deleter()
 // once ownership has been handed off to a caller who only has those two
@@ -442,7 +469,11 @@ public:
         return ptr_ != nullptr;
     }
 
-    void reset(std::size_t n) noexcept
+    // Allocate n elements, discarding whatever was held before and keeping none
+    // of its contents. Always uses the small backend -- see
+    // ISOSPEC_ALIGNED_PTR_VM_THRESHOLD for why a one-shot allocation of a known
+    // size does not want the VM one. (Not noexcept: allocation can throw.)
+    void reset(std::size_t n)
     {
         free_current();
 #if ISOSPEC_ALIGNED_PTR_HAVE_VM_REALLOC
@@ -487,7 +518,7 @@ public:
             return;
         }
 
-        if (new_bytes >= aligned_ptr_detail::os_page_size()) {
+        if (new_bytes >= aligned_ptr_detail::vm_backend_threshold()) {
             // Crossing the threshold: switch backend. This one transition
             // still has to copy -- there is nothing yet to remap.
             aligned_ptr_detail::vm_region r = aligned_ptr_detail::vm_create(new_bytes);

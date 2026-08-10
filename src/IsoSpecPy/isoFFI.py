@@ -119,6 +119,13 @@ class IsoFFI:
         const int*    confsFixedEnvelope(void* tabulator);
         size_t confs_noFixedEnvelope(void* tabulator);
 
+        typedef void (*IsoSpecArrayDeleter)(void* array, size_t size);
+
+        double* massesFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out);
+        double* probsFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out);
+        int*    confsFixedEnvelopeWithDeleter(void* tabulator, size_t* size_out, IsoSpecArrayDeleter* deleter_out);
+        void freeReleasedArrayWithDeleter(void* array, size_t size, IsoSpecArrayDeleter deleter);
+
         double empiricAverageMass(void* tabulator);
         double empiricVariance(void* tabulator);
         double empiricStddev(void* tabulator);
@@ -156,6 +163,8 @@ class IsoFFI:
         void array_fma(double* array, size_t N, double mul, double add);
 
         void parse_fasta_c(const char* fasta, int atomCounts[6]);
+
+        const char* activeSimdLevel(void);
 
         #define NUMBER_OF_ISOTOPIC_ENTRIES 292
         extern const size_t isospec_number_of_isotopic_entries;

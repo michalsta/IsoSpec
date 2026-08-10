@@ -24,6 +24,7 @@
 #include <memory>
 #include "aligned_ptr.h"
 #include "platform.h"
+#include "iso_simd.h"   // ISOSPEC_LPROB_GUARDIANS: how many sentinels each marginal appends
 #include "conf.h"
 #include "allocator.h"
 #include "operators.h"
@@ -362,8 +363,8 @@ class PrecalculatedMarginal : public Marginal
     */
     inline const double* get_masses_ptr() const { return masses.get(); }
 
-    inline const aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT>& get_masses() const { return masses; }
-    inline const aligned_unique_ptr<double, DOUBLE_SIMD_ALIGNMENT>& get_probs() const { return probs; }
+    //! Get the table of the probabilities of subisotopologues.
+    inline const double* get_probs_ptr() const { return probs.get(); }
 
     //! Get the counts of isotopes that define the subisotopologue.
     /*!

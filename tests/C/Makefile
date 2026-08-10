@@ -22,15 +22,23 @@ INC      := -I../../src/IsoSpec++
 UNITY    := ../../src/IsoSpec++/unity-build.cpp
 BUILD    := build
 
+# unity-build.cpp #includes every source file in the library, so a rule naming
+# only that one file leaves the object stale after any edit to the library --
+# the suite then links, and passes, against the previous build.  Let the
+# compiler write the real dependency lists instead.
+DEPFLAGS := -MMD -MP
+
 .PHONY: all test clean
 
 all: $(BUILD)/test_c_api
 
 $(BUILD)/unity.o: $(UNITY) | $(BUILD)
-	$(CXX) $(CXXFLAGS) $(INC) -c $(UNITY) -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INC) -c $(UNITY) -o $@
 
-$(BUILD)/test_c_api.o: test_c_api.c ../../src/IsoSpec++/cwrapper.h | $(BUILD)
-	$(CC) $(CFLAGS) $(INC) -c test_c_api.c -o $@
+$(BUILD)/test_c_api.o: test_c_api.c | $(BUILD)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INC) -c test_c_api.c -o $@
+
+-include $(BUILD)/unity.d $(BUILD)/test_c_api.d
 
 $(BUILD)/test_c_api: $(BUILD)/test_c_api.o $(BUILD)/unity.o
 	$(CXX) $^ -o $@ -lm
