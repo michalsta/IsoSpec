@@ -135,8 +135,20 @@ static std::size_t bin_run(const double** lProbs_ptr,
         // -- but everything ahead of it is, which is where the work is.
         const simd_double idx = simd_ns::floor((masses + vhwmm) * vinv_bin_width);
 
+        // Hand the probabilities to the scatter through a buffer rather than by
+        // subscripting the vector. Clang otherwise sees every lane extracted and
+        // un-vectorises the multiply above into W scalar vmulsd's, each with its
+        // own 8-byte load, putting a load->mul->add->store chain on every lane:
+        // measured 2.03x slower on Alder Lake, 1.36x on Piledriver. The spill
+        // itself is free -- these values are consumed one lane at a time either
+        // way, so the round trip through memory was always going to happen; this
+        // only fixes where the multiply lands relative to it. GCC is unaffected
+        // (it kept the packed form regardless) and the results are bit-identical.
+        alignas(DOUBLE_SIMD_ALIGNMENT) double pbuf[W];
+        probs.copy_to(pbuf, simd_ns::vector_aligned);
+
         for(std::size_t ii = 0; ii < W; ii++)
-            acc[static_cast<std::ptrdiff_t>(idx[ii])] += probs[ii];
+            acc[static_cast<std::ptrdiff_t>(idx[ii])] += pbuf[ii];
 
         emitted += W;
         p += W;
