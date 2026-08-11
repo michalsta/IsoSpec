@@ -16,6 +16,18 @@ include(${CMAKE_CURRENT_LIST_DIR}/../src/IsoSpec++/IsaDispatch.cmake)
 
 add_library(IsoSpecCppPy SHARED ../src/IsoSpec++/unity-build.cpp ${isospec_ISA_SRCS})
 target_compile_features(IsoSpecCppPy PRIVATE cxx_std_20)
+
+# macOS wheels are built with Homebrew GCC (Apple's libc++ has no
+# <experimental/simd>), and Homebrew bottles its libstdc++.6.dylib for the
+# *current* macOS -- minos 26.0 today. delocate refuses to bundle a dylib whose
+# minimum target is newer than the wheel's (11.0 on arm64), and hard-fails the
+# build. Linking the C++ runtime statically leaves libSystem as the only
+# dependency, so there is nothing for delocate to reject. The
+# "built for newer macOS version" warnings this draws from ld are the archive
+# members' own load commands and are harmless.
+if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  target_link_options(IsoSpecCppPy PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 #python_extension_module(IsoSpecCppPy)
 install(TARGETS IsoSpecCppPy LIBRARY DESTINATION IsoSpecPy)
 install(DIRECTORY ../src/IsoSpec++/ DESTINATION IsoSpecPy/IsoSpec++
