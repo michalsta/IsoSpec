@@ -47,7 +47,6 @@ testpaths = ["tests/Python"]
 
 [tool.cibuildwheel]
 enable = ["pypy"]
-skip = ["cp36-*", "cp37-*", "pp37-*"]
 test-command = "python -m pytest {project}/tests/Python"
 #test-sources = ["tests/Python"]
 test-extras = ["testing"]
@@ -55,7 +54,9 @@ test-extras = ["testing"]
 # Apple Clang's libc++ has no <experimental/simd>; build with Homebrew GCC instead.
 [tool.cibuildwheel.macos]
 before-all = "brew install gcc"
-environment = { CC = "$(ls $(brew --prefix gcc)/bin/gcc-* | sort -V | tail -1)", CXX = "$(ls $(brew --prefix gcc)/bin/g++-* | sort -V | tail -1)" }
+# NB: cibuildwheel evaluates these with bashlex, which supports command
+# substitution but *not* pipelines - hence the `sh -c` wrapper.
+environment = { CC = "$(sh -c 'ls $(brew --prefix gcc)/bin/gcc-* | sort -V | tail -1')", CXX = "$(sh -c 'ls $(brew --prefix gcc)/bin/g++-* | sort -V | tail -1')" }
 
 [tool.scikit-build.sdist]
 exclude = ["**/*"]
