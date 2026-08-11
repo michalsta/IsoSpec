@@ -1,5 +1,12 @@
-name: Build
+name: Wheels
 
+# Pushing a v* tag builds *and publishes*. To exercise the wheel build without
+# that, push the branch instead -- `git push -f origin HEAD:ci_wheels` -- or use
+# the Run workflow button / `gh workflow run build_wheels.yml --ref <branch>`,
+# which can narrow the run to one runner and one Python:
+#     gh workflow run build_wheels.yml --ref main -f os=macos-latest -f build='cp39-*'
+# Never re-push a version tag to test: upload_pypi fires on every v* push, and a
+# filename that reaches PyPI once can never be replaced.
 on:
   push:
     branches:
@@ -7,15 +14,41 @@ on:
       - ci_wheels
     tags:
       - v*
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner to build on
+        type: choice
+        default: all
+        options:
+          - all
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - windows-11-arm
+          - macos-15-intel
+          - macos-latest
+      build:
+        description: 'CIBW_BUILD selector, e.g. "cp39-*" (blank = every Python)'
+        type: string
+        default: ''
 
 jobs:
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # A release is all-or-nothing, so on a v* tag let the first failure cancel
+      # the rest. Everywhere else the point of the run is the report, and one
+      # platform's failure must not hide the other five (it did, 2026-08).
+      fail-fast: ${{ startsWith(github.ref, 'refs/tags/v') }}
       matrix:
         #os: [ubuntu-20.04, windows-2019, macos-10.15]
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15-intel, macos-latest]
+        # One runner when asked for by hand, the full set otherwise: `inputs` is
+        # empty on push, so the fallback covers tags and ci_wheels alike.
+        os: ${{ fromJSON(inputs.os && inputs.os != 'all'
+                         && format('["{0}"]', inputs.os)
+                         || '["ubuntu-latest", "ubuntu-24.04-arm", "windows-latest", "windows-11-arm", "macos-15-intel", "macos-latest"]') }}
 
     steps:
       - uses: actions/checkout@v7
@@ -36,6 +69,9 @@ jobs:
         # to supply options, put them in 'env', like:
         env:
           GITHUB_BUILDING_WHEELS: 1
+          # "*" is cibuildwheel's own default; spelling it out keeps an unset
+          # input from becoming an empty selector that matches nothing.
+          CIBW_BUILD: ${{ inputs.build || '*' }}
 
       - uses: actions/upload-artifact@v7
         with:
