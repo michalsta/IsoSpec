@@ -9,9 +9,13 @@ probabilities:
 
 * ``test_vs_old_isospec`` — the current results must also match IsoSpec 1.0.7,
   installed as ``OldIsoSpecPy``.  Skipped (not failed) when that package is not
-  installed::
+  installed, or cannot work on this platform::
 
       pip install OldIsoSpecPy --index-url https://test.pypi.org/simple/
+
+  It is *not* skipped when the two libraries are installed but refuse to share
+  a process — that is a bug in our own packaging, and ``test_cxx_runtime.py``
+  fails on it.
 
 Historically this file gated every assertion behind a ``sys.argv``-derived
 ``silentish_run`` flag, which meant that under pytest the ``kinda_like`` checks
@@ -130,18 +134,16 @@ def test_new_consistency(molecule, parameter):
 
 @pytest.mark.parametrize("molecule", molecules)
 @pytest.mark.parametrize("parameter", parameters)
-def test_vs_old_isospec(molecule, parameter):
+def test_vs_old_isospec(old_isospec_probe, molecule, parameter):
     """Current IsoSpec matches IsoSpec 1.0.7 (OldIsoSpecPy), if installed."""
-    try:
-        OldIsoSpecPy = pytest.importorskip(
-            "OldIsoSpecPy",
-            reason="install with: pip install OldIsoSpecPy --index-url https://test.pypi.org/simple/")
-    except Exception as e:
-        # OldIsoSpecPy only bundles prebuilt x32/x64 Windows DLLs, so on
-        # platforms like win-arm64 the import succeeds but the module raises
-        # while trying to load its C++ part instead of failing with
-        # ImportError, which importorskip wouldn't catch.
-        pytest.skip(f"OldIsoSpecPy present but unusable on this platform: {e}")
+    # Whether importing OldIsoSpecPy here is even safe was settled out of
+    # process by the ``old_isospec_probe`` fixture: when the two libraries
+    # cannot coexist the import does not raise, it aborts the interpreter, so
+    # importorskip's try/except would not save this session.  The failure is
+    # reported by test_cxx_runtime.py; here it is only a reason to stand down.
+    if old_isospec_probe.status != "ok":
+        pytest.skip(old_isospec_probe.detail)
+    import OldIsoSpecPy
 
     new_ordered = confs_from_ordered_generator(molecule, parameter)
     old_ordered = OldIsoSpecPy.IsoSpecPy.IsoSpec.IsoFromFormula(
