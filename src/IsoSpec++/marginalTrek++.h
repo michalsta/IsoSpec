@@ -219,7 +219,6 @@ class MarginalTrek : public Marginal
 {
  private:
     int current_count;
-    const ConfOrderMarginal orderMarginal;
     std::priority_queue<ProbAndConfPtr, pod_vector<ProbAndConfPtr> > pq;
     pod_vector<unsafe_pod_vector<ProbAndConfPtr> > fringe;
     Allocator<int> allocator;
@@ -227,7 +226,6 @@ class MarginalTrek : public Marginal
     pod_vector<double> _conf_masses;
     pod_vector<int*> _confs;
 
-    const double min_lprob;
     size_t current_bucket;
     size_t initialized_until;
 
@@ -400,8 +398,6 @@ class LayeredMarginal : public Marginal
     pod_vector<Conf> fringe;
     pod_vector<double> fringe_unn_lprobs;
     Allocator<int> allocator;
-    const ConfEqual equalizer;
-    const KeyHasher keyHasher;
     pod_vector<double> lProbs;
     pod_vector<double> probs;
     pod_vector<double> masses;
@@ -549,7 +545,7 @@ class SingleAtomMarginal : public Marginal
     {
         #ifdef ISOSPEC_DEBUG
         if (idx < 0 || static_cast<size_t>(idx) >= original_indexes.size())
-            throw std::out_of_range("Index out of range in SingleAtomMarginal::et_original_position");
+            throw std::out_of_range("Index out of range in SingleAtomMarginal::get_original_position");
         #endif
         return original_indexes[idx];
     }
@@ -566,7 +562,10 @@ class LoggingMarginal : public Marginal
  public:
 
 
-    LoggingMarginal(T&& m) : Marginal(m), real_marginal(std::make_unique(std::move(m))) {}
+    // The cast moves the Marginal base only: T itself is not move-constructible
+    // (a bare std::move(m) would select T's deleted copy constructor), but every
+    // marginal specialization constructs from a Marginal&&.
+    LoggingMarginal(T&& m) : Marginal(m), real_marginal(std::make_unique<T>(static_cast<Marginal&&>(m))) {}
     LoggingMarginal(T&& m, int tabSize, int hashSize)
         : Marginal(m), real_marginal(std::make_unique<T>(std::move(m), tabSize, hashSize)) {}
 
@@ -578,7 +577,7 @@ class LoggingMarginal : public Marginal
     inline double get_prob(int idx) const { auto ret = real_marginal->get_prob(idx); std::cout << "LoggingMarginal::get_prob: " << idx << " " << ret << std::endl; return ret; }
     inline double get_mass(int idx) const { auto ret = real_marginal->get_mass(idx); std::cout << "LoggingMarginal::get_mass: " << idx << " " << ret << std::endl; return ret; }
     inline const double* get_lProbs_ptr() const { auto ret = real_marginal->get_lProbs_ptr(); std::cout << "LoggingMarginal::get_lProbs_ptr: "; printArray<double>(ret, real_marginal->get_no_confs()); return ret; }
-    inline const Conf& get_conf(int idx) const { auto ret = real_marginal->get_conf(idx); std::cout << "LoggingMarginal::get_conf: " << idx << std::endl; return ret; }
+    inline const Conf& get_conf(int idx) const { const Conf& ret = real_marginal->get_conf(idx); std::cout << "LoggingMarginal::get_conf: " << idx << std::endl; return ret; }
     inline unsigned int get_no_confs() const { auto ret = real_marginal->get_no_confs(); std::cout << "LoggingMarginal::get_no_confs: " << ret << std::endl; return ret; }
     inline bool probeConfigurationIdx(int idx) { auto ret = real_marginal->probeConfigurationIdx(idx); std::cout << "LoggingMarginal::probeConfigurationIdx: " << idx << " " << ret << std::endl; return ret; }
     inline double get_min_mass() const { auto ret = real_marginal->get_min_mass(); std::cout << "LoggingMarginal::get_min_mass: " << ret << std::endl; return ret; }

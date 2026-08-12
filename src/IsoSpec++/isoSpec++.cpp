@@ -374,7 +374,19 @@ marginals(nullptr)
 
     dimNumber = parse_formula(formula, isotope_masses, isotope_probabilities, &isotopeNumbers, &atomCounts, &confSize, use_nominal_masses);
 
-    setupMarginals(isotope_masses.data(), isotope_probabilities.data());
+    try{
+        setupMarginals(isotope_masses.data(), isotope_probabilities.data());
+    }
+    catch(...)
+    {
+        // parse_formula allocated these; without this catch they leak whenever
+        // setupMarginals throws (e.g. an atom count over the lgamma-table limit).
+        delete[] isotopeNumbers;
+        delete[] atomCounts;
+        isotopeNumbers = nullptr;
+        atomCounts = nullptr;
+        throw;
+    }
 }
 
 

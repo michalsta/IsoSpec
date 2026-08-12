@@ -405,10 +405,8 @@ MarginalTrek::MarginalTrek(
 ) :
 Marginal(std::move(m)),
 current_count(0),
-orderMarginal(atom_lProbs, isotopeNo),
 pq(),
-allocator(isotopeNo, tabSize),
-min_lprob(*std::min_element(atom_lProbs, atom_lProbs+isotopeNo))
+allocator(isotopeNo, tabSize)
 {
     int* initialConf = allocator.makeCopy(mode_conf);
 
@@ -579,8 +577,6 @@ allocator(isotopeNo, tabSize)
                             lProbs.push_back(logp);
                         }
                     }
-                    else
-                        prob_part_acc[jj+1] = prob_part_acc[jj] + prob_partials[jj];
 
                     if (currentConf[jj] > mode_conf[jj])
                         break;
@@ -628,8 +624,7 @@ PrecalculatedMarginal::~PrecalculatedMarginal()
 
 
 LayeredMarginal::LayeredMarginal(Marginal&& m, int tabSize, int)
-: Marginal(std::move(m)), current_threshold(1.0), allocator(isotopeNo, tabSize),
-equalizer(isotopeNo), keyHasher(isotopeNo)
+: Marginal(std::move(m)), current_threshold(1.0), allocator(isotopeNo, tabSize)
 {
     fringe.push_back(mode_conf);
     lProbs.push_back(std::numeric_limits<double>::infinity());

@@ -174,7 +174,7 @@ template<typename T> class pod_vector
 
     ISOSPEC_FORCE_INLINE const T& back() const noexcept
     {
-        ISOSPEC_IMPOSSIBLE(first_free > backend_past_end);
+        ISOSPEC_IMPOSSIBLE(first_free == store);
         return *(first_free-1);
     }
 
@@ -353,7 +353,7 @@ template<typename T> class unsafe_pod_vector
 
     ISOSPEC_FORCE_INLINE const T& back() const noexcept
     {
-        ISOSPEC_IMPOSSIBLE(first_free > backend_past_end);
+        ISOSPEC_IMPOSSIBLE(first_free == store);
         return *(first_free-1);
     }
 
