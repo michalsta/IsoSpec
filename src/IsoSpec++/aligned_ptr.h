@@ -75,18 +75,28 @@
 #if ISOSPEC_ALIGNED_PTR_HAVE_VM_REALLOC
 namespace aligned_ptr_detail {
 
-inline std::size_t os_page_size() noexcept
+// A namespace-scope initializer runs once, single-threaded, before this
+// library is reachable from anywhere else -- unlike a function-local static,
+// whose first-use initialization needs a runtime guard (a lock, on most
+// ABIs) to stay safe if two threads race to initialize it. realloc() below
+// queries this on every call regardless of size, making it the earliest and
+// most frequently hit point such a guard could be contended.
+inline std::size_t compute_os_page_size() noexcept
 {
 #if ISOSPEC_WE_ARE_ON_WINDOWS
-    static const std::size_t sz = [] {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        return static_cast<std::size_t>(si.dwPageSize);
-    }();
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    return static_cast<std::size_t>(si.dwPageSize);
 #else
-    static const std::size_t sz = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+    return static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
 #endif
-    return sz;
+}
+
+inline const std::size_t os_page_size_ = compute_os_page_size();
+
+inline std::size_t os_page_size() noexcept
+{
+    return os_page_size_;
 }
 
 inline std::size_t round_up_to_page(std::size_t bytes) noexcept

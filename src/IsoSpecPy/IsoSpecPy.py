@@ -203,7 +203,12 @@ class Iso(object):
             offsets.append(tuple(newl))
         self.offsets = tuple(offsets)
 
-        self.conf_space = isoFFI.ffi.new("int[" + str(sum(self.isotopeNumbers)) + "]")
+        # "int[]" (open array) + a separate count keeps this call to a single,
+        # fixed type string cached after its first use, instead of parsing a
+        # fresh "int[N]" through cffi's C parser on every single Iso() built
+        # -- N here varies with the formula and cffi's type cache is keyed on
+        # the exact string, so embedding N in it defeats that cache entirely.
+        self.conf_space = isoFFI.ffi.new("int[]", sum(self.isotopeNumbers))
 
         self.iso = self.ffi.setupIso(self.dimNumber, self.isotopeNumbers,
                                      self.atomCounts,
@@ -278,7 +283,10 @@ class Iso(object):
 
     def getMarginalLogSizeEstimates(self, prob):
         cbuf = isoFFI.clib.getMarginalLogSizeEstimates(self.iso, prob)
-        ret = list(isoFFI.ffi.cast('double[' + str(self.dimNumber) + ']', cbuf))
+        # cbuf is already "double *" (cdef'd below): index it directly rather
+        # than casting through a fresh "double[N]" string, which would need a
+        # full, uncached cffi/pycparser parse for every distinct dimNumber.
+        ret = [cbuf[i] for i in range(self.dimNumber)]
         isoFFI.clib.freeReleasedArray(cbuf)
         return ret
 
@@ -353,12 +361,32 @@ class IsoDistribution(object):
                 size_out = isoFFI.ffi.new("size_t*")
                 deleter_out = isoFFI.ffi.new("IsoSpecArrayDeleter*")
                 what = getter(cobject, size_out, deleter_out)
-                x = isoFFI.ffi.cast(typename + '[' + str(self.size*mult) + ']', what)
+                # Reinterpreting `what` as an array of exactly the right length
+                # would normally mean asking cffi to parse "typename[N]" -- but
+                # N varies on every call, so cffi's per-string type cache never
+                # hits and each call falls through to a full, uncached parse.
+                # Route the *length* through a plain byte buffer instead: the
+                # "typename *" cast and the "typename[]" open-array type are
+                # both fixed strings, parsed (and cached) once for the life of
+                # the process, no matter how many distinct N show up here.
+                n = self.size * mult
+                ptr = isoFFI.ffi.cast(typename + ' *', what)
                 if what != isoFFI.ffi.NULL:
                     # An empty envelope owns nothing, and has nothing to release.
+                    # The destructor is attached to the plain pointer, not to
+                    # the sized array below: cffi's from_buffer() cdata does
+                    # not support ffi.gc() directly (it corrupts the array's
+                    # length -- verified separately). Attaching it here
+                    # instead works because the array keeps its backing
+                    # buffer alive, and the buffer keeps this pointer alive,
+                    # so the destructor still fires exactly when the array
+                    # itself is finally dropped.
                     nbytes = size_out[0]
                     deleter = deleter_out[0]
-                    x = isoFFI.ffi.gc(x, lambda p: isoFFI.clib.freeReleasedArrayWithDeleter(p, nbytes, deleter))
+                    ptr = isoFFI.ffi.gc(ptr, lambda p: isoFFI.clib.freeReleasedArrayWithDeleter(p, nbytes, deleter))
+                x = isoFFI.ffi.from_buffer(
+                    typename + '[]',
+                    isoFFI.ffi.buffer(ptr, n * isoFFI.ffi.sizeof(typename)))
                 setattr(self, attrname, x)
 
             wrap("double", isoFFI.clib.massesFixedEnvelopeWithDeleter, "masses")
@@ -377,9 +405,11 @@ class IsoDistribution(object):
             if len(probs) != len(masses):
                 raise ValueError("masses and probs must have the same length")
             self.size = len(probs)
-            type_str = "double["+str(self.size)+"]"
-            self.probs  = isoFFI.ffi.new(type_str, probs)
-            self.masses = isoFFI.ffi.new(type_str, masses)
+            # "double[]" (open array) infers its length from the initializer,
+            # so this is one fixed, cacheable type string regardless of size
+            # -- see the matching note on conf_space above.
+            self.probs  = isoFFI.ffi.new("double[]", probs)
+            self.masses = isoFFI.ffi.new("double[]", masses)
         else:
             raise ValueError("IsoDistribution requires at least one of: cobject, or masses+probs")
 

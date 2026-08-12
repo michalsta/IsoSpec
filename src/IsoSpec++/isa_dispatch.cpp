@@ -14,6 +14,7 @@
  *   along with IsoSpec.  If not, see <https://opensource.org/licenses/BSD-2-Clause>.
  */
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include "isa_kernels.h"
@@ -127,35 +128,53 @@ IsaLevel best_available_level()
     return best;
 }
 
-// The selection. Resolved on first use rather than during static initialisation,
-// so it cannot lose a race with the initialisation of anything it depends on.
+// The selection. Resolved on first use rather than during static
+// initialisation, so it cannot lose a race with the initialisation of
+// anything it depends on -- but deliberately *not* via a function-local
+// static: that would need a runtime guard (a lock, on most ABIs) to stay
+// safe if two threads race to initialize it for the first time, which is
+// unnecessary here. Computing the answer is a pure, deterministic function
+// of CPU features and an environment variable, so letting two racing
+// threads compute and publish it twice is harmless; only the publication
+// itself (the pointer store below) needs to be atomic.
 struct Selection {
     IsaLevel level;
     const IsaKernels* kernels;
-
-    Selection()
-    {
-        level = best_available_level();
-
-        // An override lets a user work around a CPU whose wide units are a trap
-        // (or slower), and lets the test suite exercise every level the host can
-        // actually run. Ignored, rather than rejected, if it names something
-        // unavailable -- a stray environment variable must not stop the library.
-        const char* env = getenv("ISOSPEC_ISA_LEVEL");
-        if(env != nullptr)
-        {
-            const IsaLevel wanted = level_from_name(env);
-            if(wanted != ISA_LEVEL_COUNT && level_usable(wanted))
-                level = wanted;
-        }
-
-        kernels = level_table(level);
-    }
 };
 
-Selection& selection()
+Selection compute_selection()
 {
-    static Selection s;
+    Selection s;
+    s.level = best_available_level();
+
+    // An override lets a user work around a CPU whose wide units are a trap
+    // (or slower), and lets the test suite exercise every level the host can
+    // actually run. Ignored, rather than rejected, if it names something
+    // unavailable -- a stray environment variable must not stop the library.
+    const char* env = getenv("ISOSPEC_ISA_LEVEL");
+    if(env != nullptr)
+    {
+        const IsaLevel wanted = level_from_name(env);
+        if(wanted != ISA_LEVEL_COUNT && level_usable(wanted))
+            s.level = wanted;
+    }
+
+    s.kernels = level_table(s.level);
+    return s;
+}
+
+std::atomic<const IsaKernels*> g_kernels{nullptr};
+std::atomic<IsaLevel> g_level{ISA_LEVEL_BASELINE};
+
+Selection selection()
+{
+    const IsaKernels* k = g_kernels.load(std::memory_order_acquire);
+    if(k != nullptr)
+        return Selection{g_level.load(std::memory_order_relaxed), k};
+
+    const Selection s = compute_selection();
+    g_level.store(s.level, std::memory_order_relaxed);
+    g_kernels.store(s.kernels, std::memory_order_release);
     return s;
 }
 
@@ -185,9 +204,8 @@ bool set_isa_level(IsaLevel level)
 {
     if(!level_usable(level))
         return false;
-    Selection& s = selection();
-    s.level = level;
-    s.kernels = level_table(level);
+    g_level.store(level, std::memory_order_relaxed);
+    g_kernels.store(level_table(level), std::memory_order_release);
     return true;
 }
 
