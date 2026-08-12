@@ -37,6 +37,9 @@ jobs:
   build_wheels:
     name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # Guards against a wedged test step burning the full 6h GitHub job cap on
+    # every runner (macOS billed at 10x) -- see investigation.txt, 2026-08.
+    timeout-minutes: 90
     strategy:
       # A release is all-or-nothing, so on a v* tag let the first failure cancel
       # the rest. Everywhere else the point of the run is the report, and one
@@ -81,6 +84,7 @@ jobs:
   build_sdist:
     name: Build source distribution
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:

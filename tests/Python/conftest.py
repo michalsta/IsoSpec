@@ -45,8 +45,15 @@ def old_isospec_probe():
 
     ``status`` is one of ``ok`` / ``missing`` / ``unusable`` / ``broken``.
     """
-    proc = subprocess.run([sys.executable, "-c", _PROBE],
-                          capture_output=True, text=True)
+    try:
+        proc = subprocess.run([sys.executable, "-c", _PROBE],
+                              capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as e:
+        return OldIsoSpecProbe(
+            "broken",
+            "importing IsoSpecPy and OldIsoSpecPy in one interpreter hung "
+            f"(no exit within {e.timeout}s)"
+            f"\n--- stdout ---\n{e.stdout}\n--- stderr ---\n{e.stderr}")
     if proc.returncode == _OK:
         return OldIsoSpecProbe("ok", "")
     if proc.returncode == _MISSING:
