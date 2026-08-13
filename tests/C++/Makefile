@@ -61,6 +61,7 @@ TEST_SRCS := tests_main.cpp \
              test_aligned_ptr.cpp \
              test_analytic.cpp \
              test_api_iso.cpp \
+             test_boundary_walk.cpp \
              test_containers.cpp \
              test_cross_generator.cpp \
              test_cwrapper.cpp \

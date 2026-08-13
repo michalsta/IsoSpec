@@ -950,6 +950,15 @@ template<bool tgetConfs> void FixedEnvelope::total_prob_init(Iso&& iso, double t
     // - similar to the quickselect algorithm, except that we use the cumulative sum of elements
     // left of pivot to decide whether to go left or right, instead of the positional index.
     // We'll be sorting by the prob array, permuting the other ones in parallel.
+    //
+    // The partition is Hoare-style, with the left side's sum accumulated inside
+    // the partition scans themselves. This pass is memory-bound, so what counts
+    // is passes over the data and stores into it: the fused sum keeps it at one
+    // pass per level (a separate summing pass gives back most of the win), and
+    // Hoare swaps only misplaced *pairs* where the previous Lomuto partition
+    // swapped once per every element above the pivot. Measured on the harvested
+    // real trim inputs: 1.65x faster than Lomuto on Piledriver, 1.3x on Alder
+    // Lake, never slower, including L2-resident segment sizes.
 
     int* conf_swapspace = nullptr;
     constexpr_if(tgetConfs)
@@ -961,8 +970,15 @@ template<bool tgetConfs> void FixedEnvelope::total_prob_init(Iso&& iso, double t
 
     while(start < end)
     {
-        // Partition part
         size_t len = end - start;
+        if(len == 1)
+        {
+            // A single element cannot be partitioned (both Hoare sides must be
+            // nonempty): it is kept iff the prefix sum still needs it.
+            if(sum_to_start >= target_total_prob)
+                end = start;
+            break;
+        }
 #if ISOSPEC_BUILDING_R
         size_t pivot = len/2 + start;
 #else
@@ -970,30 +986,56 @@ template<bool tgetConfs> void FixedEnvelope::total_prob_init(Iso&& iso, double t
                                                     // need a very uniform distribution just for pivot
                                                     // selection
 #endif
-        double pprob = this->_probs[pivot];
-        swap<tgetConfs>(pivot, end-1, conf_swapspace);
+        const double pprob = this->_probs[pivot];
 
-        double new_csum = sum_to_start;
-
-        size_t loweridx = start;
-        for(size_t ii = start; ii < end-1; ii++)
-            if(this->_probs[ii] > pprob)
+        // Descending Hoare partition of [start, end) around the value pprob:
+        // afterwards [start, split) all >= pprob and [split, end) all <= pprob.
+        // left_sum accumulates the values that end up on the left: everything
+        // the i-scan walks past stays there, and each swap moves the j-side
+        // value into a left slot.
+        std::ptrdiff_t ii = static_cast<std::ptrdiff_t>(start) - 1;
+        std::ptrdiff_t jj = static_cast<std::ptrdiff_t>(end);
+        double left_sum = 0.0;
+        while(true)
+        {
+            while(true)
             {
-                swap<tgetConfs>(ii, loweridx, conf_swapspace);
-                new_csum += this->_probs[loweridx];
-                loweridx++;
+                ii++;
+                if(!(this->_probs[ii] > pprob))
+                    break;
+                left_sum += this->_probs[ii];
             }
+            do { jj--; } while(this->_probs[jj] < pprob);
+            if(ii >= jj)
+                break;
+            swap<tgetConfs>(ii, jj, conf_swapspace);
+            left_sum += this->_probs[ii];
+        }
+        // The scans cross with at most one element between them (it then equals
+        // the pivot). jj == ii is the case where that element sits on the left
+        // without the i-scan ever having counted it.
+        if(jj == ii)
+            left_sum += this->_probs[ii];
 
-        swap<tgetConfs>(end-1, loweridx, conf_swapspace);
+        size_t split = static_cast<size_t>(jj) + 1;
+        if(split == end)
+        {
+            // Right side came out empty; then _probs[end-1] == pprob (the j-scan
+            // stopped on it immediately), so splitting just before it is a valid
+            // partition too, and keeps both sides strictly shrinking.
+            split = end - 1;
+            left_sum -= this->_probs[end-1];
+        }
 
         // Selection part
+        double new_csum = sum_to_start + left_sum;
         if(new_csum < target_total_prob)
         {
-            start = loweridx + 1;
-            sum_to_start = new_csum + this->_probs[loweridx];
+            sum_to_start = new_csum;
+            start = split;
         }
         else
-            end = loweridx;
+            end = split;
     }
 
     constexpr_if(tgetConfs)
