@@ -638,6 +638,42 @@ void IsoThresholdGenerator::terminate_search()
     lProbs_ptr = lProbs_ptr_start + marginalResults[0]->get_no_confs()-1;
 }
 
+// Find, scanning downward (towards lProbs_ptr_start) from p, the last position
+// whose value is >= lcfmsv. lProbs descends in value as the index rises, so the
+// qualifying positions are exactly [start, B] for some boundary B; count_confs
+// only scans on lines whose carry was accepted, which guarantees
+// *start >= lcfmsv, so B exists. Galloping (probe at distance 1, 2, 4, ...)
+// then binary search inside the final bracket: O(log d) in the distance d
+// actually moved, instead of a linear scan's O(d).
+static inline const double* boundary_scan_down(const double* p, const double* start, double lcfmsv)
+{
+    if(*p >= lcfmsv)
+        return p;
+    const double* hi = p;      // invariant: *hi < lcfmsv
+    size_t step = 1;
+    while(true)
+    {
+        const double* q = (static_cast<size_t>(hi - start) >= step) ? hi - step : start;
+        if(*q >= lcfmsv)
+        {
+            // Boundary within [q, hi): plain binary search.
+            const double* lo = q;
+            while(hi - lo > 1)
+            {
+                const double* mid = lo + (hi - lo) / 2;
+                if(*mid >= lcfmsv)
+                    lo = mid;
+                else
+                    hi = mid;
+            }
+            return lo;
+        }
+        ISOSPEC_IMPOSSIBLE(q == start);
+        hi = q;
+        step *= 2;
+    }
+}
+
 size_t IsoThresholdGenerator::count_confs()
 {
     if(empty)
@@ -655,8 +691,7 @@ size_t IsoThresholdGenerator::count_confs()
 
     size_t count = 0;
 
-    while(*lProbs_ptr_l < lcfmsv)
-        lProbs_ptr_l--;
+    lProbs_ptr_l = boundary_scan_down(lProbs_ptr_l, lProbs_ptr_start, lcfmsv);
 
     while(true)
     {
@@ -676,9 +711,21 @@ size_t IsoThresholdGenerator::count_confs()
             if(partialLProbs[idx] + maxConfsLPSum[idx-1] >= Lcutoff)
             {
                 short_recalc(idx-1);
-                lProbs_ptr_l = lProbs_restarts[idx];
-                while(*lProbs_ptr_l < lcfmsv)
-                    lProbs_ptr_l--;
+                // Level-1 carries continue from the previous line's boundary
+                // (which lProbs_ptr_l still holds): within a sweep over
+                // marginal 1 the cutoff never drops, so the boundary never
+                // rises, and walking it incrementally costs its total movement
+                // instead of a re-descent from the sweep top on every line.
+                // The monotonicity holds in every reachable case: whenever
+                // marginal 1 can produce a multi-line sweep and marginal 0 has
+                // more than one configuration, at least two marginals are
+                // nontrivial and all are therefore sorted; with a single-
+                // configuration marginal 0 the boundary of every accepted line
+                // is that lone configuration regardless of sorting. Carries at
+                // higher levels can move the boundary back up, and use the
+                // saved per-level restart as before.
+                lProbs_ptr_l = boundary_scan_down(idx == 1 ? lProbs_ptr_l : lProbs_restarts[idx],
+                                                  lProbs_ptr_start, lcfmsv);
                 for(idx--; idx > 0; idx--)
                     lProbs_restarts[idx] = lProbs_ptr_l;
                 break;
@@ -847,6 +894,12 @@ bool IsoLayeredGeneratorTemplate<MarginalType>::carry()
             partialMasses[idx] = partialMasses[idx+1] + marginalResults[idx]->get_mass(counter[idx]);
             partialProbs[idx] = partialProbs[idx+1] * marginalResults[idx]->get_prob(counter[idx]);
             recalc(idx-1);
+            // Deliberately NOT boundary-continued from the previous line the
+            // way count_confs() is: here marginal 0 is the *smallest* marginal
+            // (the layered ctor orders ascending), so the re-descent this
+            // would save is already short -- measured as no gain even under
+            // adversarial thin-layer schedules, while the extra select in
+            // this, the hottest carry path, cost ~5% on Binned.
             lProbs_ptr = resetPositions[idx];
 
             while(*lProbs_ptr <= last_lcfmsv)
