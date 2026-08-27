@@ -941,8 +941,8 @@ IsoLayeredGeneratorTemplate<MarginalType>::~IsoLayeredGeneratorTemplate()
 }
 
 template class IsoLayeredGeneratorTemplate<LayeredMarginal>;
-//template class IsoLayeredGeneratorTemplate<PrecalculatedMarginal>;
-//template class IsoLayeredGeneratorTemplate<MarginalTrek>;
+// template class IsoLayeredGeneratorTemplate<PrecalculatedMarginal>;
+// template class IsoLayeredGeneratorTemplate<MarginalTrek>;
 template class IsoLayeredGeneratorTemplate<SingleAtomMarginal<true>>;
 
 /*
@@ -1078,7 +1078,7 @@ template class IsoStochasticGeneratorTemplate<IsoLayeredGeneratorTemplate<Layere
 template class IsoStochasticGeneratorTemplate<IsoLayeredGeneratorTemplate<SingleAtomMarginal<true>>>;
 template class IsoStochasticGeneratorTemplate<IsoOrderedGeneratorTemplate<MarginalTrek>>;
 template class IsoStochasticGeneratorTemplate<IsoOrderedGeneratorTemplate<SingleAtomMarginal<false>>>;
-//template class IsoStochasticGeneratorTemplate<IsoThresholdGenerator>;
+// template class IsoStochasticGeneratorTemplate<IsoThresholdGenerator>;
 
 /*
  * ---------------------------------------------------------------------------------------------------
